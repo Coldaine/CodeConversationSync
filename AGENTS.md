@@ -94,12 +94,14 @@ npm test           # engine + projection tests (node test runner via tsx)
 - New projection/client code ships with tests in the same PR. Golden-line fixtures for the
   Threadle JSON protocol live with the client; if upstream's protocol changes, fixtures fail
   first — that's the point.
-- Tests must run green on SER10 (`npm test`) before a PR is marked ready. CI runs on the
-  SER10 self-hosted GitHub runner.
+- Tests must run green on SER10 (`npm test`) before a PR is marked ready. PR CI runs on
+  **GitHub-hosted runners** — never the SER10 self-hosted runner on `pull_request`
+  (public repo: that would run untrusted code on the home network). The SER10 runner is
+  for trusted `push`/`workflow_dispatch` jobs only.
 
 ## Repo hardening reminders
 
 - [ ] Install CodeRabbit + Greptile GitHub Apps on this repo (web-only, owner action)
-- [ ] Add `.github/workflows/ci.yml` (SER10 runner), then enable the `main` ruleset
+- [ ] Add `.github/workflows/ci.yml` (GitHub-hosted runners), then enable the `main` ruleset
 - [ ] Cut the `studio` branch and re-link AI Studio before protection goes live
 Tracked as a GitHub issue ("Repo hardening checklist") — keep it updated, don't duplicate it here.

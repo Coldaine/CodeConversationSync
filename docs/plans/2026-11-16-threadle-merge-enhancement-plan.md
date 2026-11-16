@@ -51,7 +51,7 @@ flowchart LR
   end
   STUDIO["Google AI Studio\n(Build mode, Gemini)"] -->|push/pull, studio branch| GH["GitHub: CodeConversationSync\nmain protected, PR-only"]
   SER10 -->|branches + PRs| GH
-  GH -->|CodeRabbit / Greptile / CI on SER10 runner| GH
+  GH -->|CodeRabbit / Greptile / CI (GitHub-hosted)| GH
 ```
 
 Rules that keep this sane:
@@ -198,7 +198,7 @@ Repo is public deliberately: free bot review. Order matters — **bots first, pr
    - [ ] CodeRabbit: install GitHub App (coderabbit.ai → Add repository `Coldaine/CodeConversationSync`). Config committed as `.coderabbit.yaml` (Phase 1) with path instructions mirroring §7.3 (e.g. auto-flag edits to `lib/server/**` claiming UI changes, request changes if `lib/types.ts` changes without projection/test updates).
    - [ ] Greptile: install GitHub App (greptile.com → enable repository). No repo config file; review style set in its dashboard.
    - Already active (found 2026-11-16): **Renovate** — it has open dependency PRs #1–#5 on this repo, so dependency updates are covered; do not add Dependabot on top without disabling one of them. Consider later: Codecov (once tests run in CI), Socket (supply chain).
-2. **CI before protection:** `.github/workflows/ci.yml` on the SER10 self-hosted runner (already registered & running): `npm ci`, typecheck, engine tests, projection tests, Threadle JSON golden-line test. A required check that doesn't exist yet would deadlock `main`.
+2. **CI before protection — GitHub-hosted runners, NOT the SER10 self-hosted runner.** This repo is public: a self-hosted runner executing `pull_request` code is arbitrary code execution on the home network (fork PRs, Renovate PRs, and AI-Studio-pushed code all count as untrusted). GitHub-hosted runners are free for public repos, so PR CI (`npm ci`, typecheck, engine/projection tests, Threadle JSON golden-line test with `actions/setup-dotnet` for .NET 10) runs there — which also removes the "SER10 offline ⇒ required check never reports ⇒ `main` deadlocked" failure mode. The SER10 self-hosted runner is reserved for trusted triggers only (`push` to `main`, `workflow_dispatch` — never `pull_request`/`pull_request_target` with checkout) for jobs that genuinely need the LAN/GPU/corpus. Security note for the existing runner: audit which repos it serves today; a runner registered for any public repo has this exposure already.
 3. **Then protect `main`** (ruleset, so bypass rules are explicit): require a PR, required approvals **0** (solo owner can't approve own PRs; bots + CI are the gate), require the CI status check, block force-pushes and branch deletion, require branches up to date before merge. Repo admins *not* exempted except a documented emergency bypass.
    ```bash
    gh api -X POST repos/Coldaine/CodeConversationSync/rulesets --input ruleset-main.json   # payload in docs/plans/appendix, Phase 1
@@ -242,7 +242,7 @@ Repo is public deliberately: free bot review. Order matters — **bots first, pr
 - **Check:** a coding session done on Blood Arrow appears in SER10's UI with correct project attribution and lineage, without manual ingest.
 
 ### Phase 5 — Hardening & upstream hygiene
-- CI required on `main` (SER10 runner), CodeRabbit+Greptile active and tuned (dismiss-noise pass), Dependabot on.
+- CI required on `main` (GitHub-hosted runners for all PR checks per §8; SER10 self-hosted runner only on trusted `push`/`workflow_dispatch` jobs), CodeRabbit+Greptile active and tuned (dismiss-noise pass), Renovate kept as the sole dependency bot.
 - Threadle upstream pin upgrade procedure documented (bump SHA in `scripts/setup-threadle.sh`, replay golden-line tests). If we ever need Core changes, fork as `Coldaine/Threadle` and point the script at it — never patch the local clone in place.
 - Optional Option-B (.NET host) evaluation with Phase 2–4 latency numbers in hand.
 
