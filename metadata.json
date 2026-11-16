@@ -1,0 +1,6 @@
+{
+  "name": "Threadle",
+  "description": "Unified intelligence map of multi-host coding sessions, Wispr Flow dictations, verified deliverables, and unfinished work.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
