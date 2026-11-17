@@ -1,7 +1,7 @@
 # Enhancement Plan: Threadle plumbing into CodeConversationSync
 
 > Status: **proposed, Phase 0 verified on SER10** · 2026-11-16 · Owner: Coldaine
-> Repos: `Coldaine/CodeConversationSync` (this repo, public) + upstream `carlnordlund/Threadle` (MIT, pinned, external)
+> Repo: `Coldaine/CodeConversationSync` (this repo, public) — one codebase: Next.js app at root + the lifted Threadle engine at `threadle/` (origin `carlnordlund/Threadle`, MIT; ours now, see `threadle/PROVENANCE.md`)
 > Dev host: **SER10** (`/ser10-data/projects/threadle-workspace/`) · UI editor of choice: Google AI Studio (Build mode)
 > Companion: `docs/threadle-merge-analysis.md` (the survey this plan is built on)
 
@@ -12,7 +12,7 @@
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **This repo stays the canonical repo**, Next.js app at root. Threadle is *not* the base repo with a UI bolted on. | AI Studio only builds/edits web apps (React client + Node server, `metadata.json`, Cloud Run-style runtime). It cannot open a .NET solution as its project, has no concept of `.sln`/`.cs`/`.bin` artifacts, and its agent context would be flooded by ~19k lines of C#. Keeping the app at root keeps Studio working at all. (See §7.) |
-| D2 | **Threadle source is not vendored into this repo.** It is cloned separately on SER10 at a pinned commit; this repo contains only the client, projection, setup scripts, and docs. | Studio syncs/edits the whole repo; vendored C# invites Studio's agent to "fix" upstream code, bloats its context, and creates merge debt against upstream. A `scripts/setup-threadle.sh` clones `carlnordlund/Threadle` at the pinned SHA and builds the binary. |
+| D2 | **One codebase: Threadle is lifted-and-shifted wholesale into this repo** at `threadle/` and becomes **our code** — maintained, modified, diverged here. Provenance/attribution in `threadle/PROVENANCE.md` (origin: `carlnordlund/Threadle` @ `857721e`, MIT). **No upstream dependency, no pinned sync, no tracking upstream releases.** *(v3 correction: v1/v2 kept Threadle external, then "vendored-but-untouchable" — both missed the explicit ask. Owner, verbatim: "we're going to make this one codebase… not a dependency.")* | The engine and the app evolve together in one repo: we can change Core where the product needs it (e.g. exposing `internal` APIs, new attribute kinds) instead of working around a foreign library. AI Studio exposure is managed by convention (`AGENTS.md`: `threadle/` is agent-owned C#, Studio works on UI paths). |
 | D3 | **Web stack is a free choice, not a marriage.** Next.js/React stays *for now* only because AI Studio generates/edits it. The graph/server layer is decided on merit at the Phase 2 gate (sidecar vs in-process .NET host, §6). If Studio is ever dropped, the UI can be re-evaluated; the projection + graph schema (the real asset) is stack-independent. | User is not attached to any web technology. What must survive any stack change: the corpus schema, the entity→layer mapping (§3), and the projected graph files. |
 | D4 | **All development happens on SER10** over SSH. This machine (whichever laptop) is a thin client. | SER10 is the always-on host (24 cores / 58 GB RAM / 1.5 TB free on `/ser10-data`; root disk ~87% full — all work lives on `/ser10-data`, never `/`). A self-hosted Actions runner runs there but is registered to `MooseGooseConsulting`, **not** this repo (§11 H3). |
 | D5 | **`main` gets PR-only protection, but only together with a `studio` integration branch** (§8, deferred to Phase 2 in v2). Bots (CodeRabbit, Greptile, + others) review PRs. | AI Studio syncs by direct push to its linked branch with AI-generated commits; whether it can target a non-default branch is **unverified (N1, §11.3)** — protecting `main` naively risks breaking Studio sync, so protection waits for the N1 experiment. Solo-owner caveat: GitHub will not let you approve your own PR, so required approvals = 0; the PR requirement exists to force bot review + CI, not human approval. |
@@ -39,7 +39,7 @@ flowchart LR
     UI["Next.js UI (this repo)\nStudio-editable views"]
     API["Next server routes\napp/api/threadle/*"]
     PROJ["Projection (pure TS)\ncorpus ⇄ graph files"]
-    BIN["threadle --json sidecar\n(pinned upstream build)"]
+    BIN["threadle --json sidecar\n(built from threadle/ in this repo)"]
     CORE["(Phase 2 gate) alt: ASP.NET host\nreferencing Threadle.Core"]
     COLL["Host collectors (future)\nClaude Code / Codex / Droid /\nOMP / Maestro / Wispr exports"]
     STORE[("Corpus store\n.bin/.tsv + sidecar JSON\nfor edge metadata")]
@@ -162,7 +162,7 @@ Persistence story after merge: graph (`.bin` via `savefile`, nodeset sidecar fil
 
 | Option | Shape | For | Against |
 |---|---|---|---|
-| **A. Sidecar (proven)** | Next server spawns `threadle --json`, serialized line protocol, typed TS client (`lib/server/threadle-client.ts`) | Zero C# work; all 103 commands incl. future upstream; Phase 0 already green on SER10 | Stringly `args` (all values stringified), single sequential process, errors only via JSON `Success/Code` (exit code always 0), no request ids → strict in-order matching, restart-on-crash handling on us |
+| **A. Sidecar (proven)** | Next server spawns `threadle --json` (built from `threadle/Threadle.CLIconsole` in this repo), serialized line protocol, typed TS client (`lib/server/threadle-client.ts`) | Zero *new* C# work to start; all 103 commands available; and because the engine is ours, the protocol itself can be changed here if it ever becomes the bottleneck — that option did not exist under the external-dependency framing | Stringly `args` (all values stringified), single sequential process, errors only via JSON `Success/Code` (exit code always 0), no request ids → strict in-order matching, restart-on-crash handling on us |
 | **B. In-process .NET host** | Small ASP.NET Core service referencing `Threadle.Core` directly, JSON HTTP API | Typed API, real concurrency story, no process babysitting; SER10 runs .NET natively and we may install anything | New C# codebase to own; only Core is callable — some model API is `internal` (must use `Network.Add*` wrappers); global statics (`UserSettings`, CWD) need isolation care in a web host; Studio can't run it either |
 | C. Port to TS | — | — | Discards the plumbing that is the entire point. Rejected. |
 
@@ -203,9 +203,9 @@ Sources: official Build-mode docs (`aistudio.google.com/docs/aistudio-build-mode
 | Owner | Paths | Rule |
 |---|---|---|
 | **AI Studio (Gemini)** | `app/page.tsx`, `app/layout.tsx`, `app/globals.css`, `components/*.tsx`, `hooks/`, `metadata.json`, visual content of views | SER10 agents: propose UI changes as PRs/prompts for Studio, don't hand-edit these except trivial fixes noted in the PR |
-| **SER10 agents (this plan)** | `lib/threadle-projection.ts`, `lib/server/**`, `app/api/threadle/**`, `app/api/analyze/route.ts` (contract only), `scripts/**`, `docs/**`, `.github/**`, `.coderabbit.yaml`, tests | Studio: must not rewrite; listed in `AGENTS.md` as off-limits |
+| **SER10 agents (this plan)** | `threadle/**` (our engine code, ex-upstream), `lib/threadle-projection.ts`, `lib/server/**`, `app/api/threadle/**`, `app/api/analyze/route.ts` (contract only), `scripts/**`, `docs/**`, `.github/**`, `.coderabbit.yaml`, tests | Studio: must not rewrite; listed in `AGENTS.md` as off-limits. Engine changes are normal code changes here — keep `threadle/Threadle.Tests` green |
 | **Shared (negotiate via PR)** | `lib/types.ts`, `lib/threadle-engine.ts`, `lib/seed-data.ts` (until deleted), `package.json` | Corpus schema lives in `lib/types.ts` — changes here are schema changes: PR-only, never direct Studio push (Studio works on `studio`, so this is automatic if §8 holds) |
-| **Nobody (generated/external)** | Threadle upstream source, `threadle-bin/`, `data/`, `node_modules/`, `.next/` | Never committed (see `.gitignore` additions in Phase 1) |
+| **Nobody (generated)** | `threadle/**/bin`, `threadle/**/obj`, `threadle-bin/`, `data/`, `node_modules/`, `.next/` | Never committed (see `.gitignore` additions in Phase 1). The `threadle/` *source* is committed — it is our engine code (SER10-agent-owned, §7.3 row above) |
 
 ---
 
@@ -237,7 +237,7 @@ Repo is public deliberately: free bot review. Order matters — **bots first, pr
 ### Phase 1 — Projection & schema (pure TS, no UI change, no sidecar yet)
 - `lib/threadle-projection.ts`: `corpus → {nodeset.tsv, layers/*.tsv, hyperedges.tsv, text-sidecar.json}` and inverse; implements §3 exactly. Fix the test setup first (add a runner that handles extensionless TS imports, e.g. `tsx --test`; wire `npm test`).
 - Port the existing engine-test intents (shared-repo tasks stay separate; overrides preserve attribution) + projection round-trip tests on the seed corpus.
-- `scripts/setup-threadle.sh` (clone upstream @ pinned SHA `857721e`, `dotnet build`; honors the workspace mise pin), `.gitignore` additions (`threadle-bin/`, `data/` only — the upstream clone lives at workspace level, outside this repo). `.coderabbit.yaml` already landed with this plan. No Dependabot — Renovate is already active (§8).
+- `scripts/build-threadle.sh` (`dotnet build threadle/Threadle.CLIconsole -c Release` — in-repo, no cloning; honors the workspace mise pin where present), `.gitignore` additions (`threadle/**/bin`, `threadle/**/obj`, `threadle-bin/`, `data/`). `.coderabbit.yaml` already landed with this plan. No Dependabot — Renovate is already active (§8).
 - **Check (executable, U8):** `npm test` green on SER10; project the seed corpus → load via real `threadle --json` → assert: total `getallnodes` count equals corpus entity count, `ext_id` set-equality (no phantom nodes — `addedge`/`importlayer` default `addmissingnodes=true` can silently manufacture kind-less nodes), every node has non-empty `kind`, per-layer edge counts match, id map stable across a second projection, and the inverse projection **deep-equals** the original `ThreadleCorpus`. Binary round-trip: `savefile` → `loadfile` → deep-equal again (N3). Timing experiment on a 1,000-node/5,000-edge synthetic corpus decides loadscript-vs-TSV as the canonical import path (N5).
 
 ### Phase 2 — Server integration (decision gate §6)
@@ -257,9 +257,9 @@ Repo is public deliberately: free bot review. Order matters — **bots first, pr
 - Sketch when it starts: per-host collectors (SER10 first) read Claude Code/Codex/Droid/OMP/Maestro histories + Wispr exports read-only, emit Threadle TSV + sidecar entries, hot-import; incremental by `contentHash`, never full re-scans. Privacy/exclusion policy (H5, §11) must be settled before any non-owner data is collected.
 - **Check (future):** a coding session done on Blood Arrow appears in SER10's UI with correct attribution and lineage, without manual ingest.
 
-### Phase 5 — Hardening & upstream hygiene
-- CI required on `main` (GitHub-hosted runners for all PR checks per §8), CodeRabbit+Greptile active and tuned after 2 weeks of real PRs (N6), Renovate kept as the sole dependency bot. **SER10 self-hosted runner is out of scope for this repo (v2 correction):** `gha-runner.service` is registered to `MooseGooseConsulting`, and `repos/Coldaine/CodeConversationSync/actions/runners` is empty — no runner bullet until H3 (§11) is decided.
-- Threadle upstream pin upgrade procedure documented (bump SHA in `scripts/setup-threadle.sh`, replay golden-line tests). If we ever need Core changes, fork as `Coldaine/Threadle` and point the script at it — never patch the local clone in place.
+### Phase 5 — Hardening & engine hygiene
+- CI required on `main` (GitHub-hosted runners for all PR checks per §8), CodeRabbit+Greptile active and tuned after 2 weeks of real PRs (N6), Renovate kept as the sole dependency bot. **SER10 self-hosted runner is out of scope for this repo:** it is registered to `MooseGooseConsulting`, and `repos/Coldaine/CodeConversationSync/actions/runners` is empty (H3, §11).
+- Engine hygiene (it is our code now): keep the lifted xUnit suite (`threadle/Threadle.Tests`) green in CI via `actions/setup-dotnet`; golden-line fixtures protect the JSON protocol *we* own — protocol changes are allowed, but they land as deliberate commits touching CLI + fixtures + TS client together.
 - Optional Option-B (.NET host) evaluation with Phase 2–4 latency numbers in hand.
 
 ---
@@ -269,7 +269,7 @@ Repo is public deliberately: free bot review. Order matters — **bots first, pr
 | Risk/question | Handling |
 |---|---|
 | Studio rewrites a SER10-owned file and the conflict dialog loses work | §7.3 ownership + small commits + `studio` branch contains the blast radius; worst case is one PR's diff, recoverable from git |
-| Sidecar protocol drifts with upstream upgrades | Pin SHA; golden-line fixtures fail loudly in CI before any upgrade merges |
+| Sidecar protocol changes (ours to make now) break the TS client silently | Golden-line fixtures fail loudly in CI; protocol changes must touch CLI, fixtures, and client in one PR |
 | Edge-metadata sidecar drifts from graph (two stores) | Projection is the single writer; sidecar entries are keyed `(layer,from,to)` and validated against `getalledges` in tests; a reconcile command is a Phase 3 deliverable, not an afterthought |
 | Solo-owner PR protection becomes ceremony without review value | Bots + CI are the reviewers; if bot noise > signal after 2 weeks, tune `.coderabbit.yaml`/Greptile settings before loosening protection |
 | Threadle's scale design is overkill for hundreds of nodes | Accepted (analysis §4): we buy the multilayer model, algorithms, and binary persistence — not speed. Option B keeps an exit if the sidecar tax dominates |

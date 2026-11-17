@@ -6,17 +6,19 @@ coding agents on SER10, and Google AI Studio (Build mode / Antigravity). Humans 
 ## What this project is
 
 Working name: **CodeConversationSync** (final product name TBD by the owner). Do **not**
-call this product "Threadle" — Threadle is the upstream graph engine only
-(`carlnordlund/Threadle`). Legacy mockup files named `ThreadleApp`/`ThreadleCorpus`
+call this product "Threadle" — that name refers to the engine code lifted into `threadle/`
+(origin: `carlnordlund/Threadle`). Legacy mockup files named `ThreadleApp`/`ThreadleCorpus`
 predate this rule and will be renamed when the product name lands.
 
 A unified map of multi-host coding work: sessions (Claude Code, Codex, Droid, OMP, Maestro,
 ChatGPT), Wispr Flow dictations, projects/tasks, deliverables, evidence, and decision lineage —
 across 6 hosts (SER10, N5, Blood Arrow, Primary Desktop, Gemini Laptop, Icarus).
 
-The graph engine is **Threadle** (upstream `carlnordlund/Threadle`, MIT, .NET 10) used as an
-external, pinned dependency. This repo holds the UI, the corpus schema, the TypeScript
-projection/client for Threadle, collectors, and docs. Read before starting:
+The graph engine lives **in this repo** at `threadle/` — the Threadle codebase
+(`Threadle.Core`, `Threadle.CLIconsole`, `Threadle.Tests`, .NET 10) lifted wholesale
+on 2026-11-16 and now **our code**: edit it, diverge it, keep its xUnit suite green.
+There is no upstream dependency (origin/provenance: `threadle/PROVENANCE.md`).
+This repo is one codebase: UI + corpus schema + projection/client + engine + collectors + docs. Read before starting:
 
 - `docs/plans/2026-11-16-threadle-merge-enhancement-plan.md` — the merge plan (source of truth)
 - `docs/threadle-merge-analysis.md` — the survey behind it
@@ -46,9 +48,9 @@ works where it is strongest, not a conflict-avoidance regime:
 | Owner | Paths |
 |---|---|
 | **AI Studio (Gemini)** | `app/page.tsx`, `app/layout.tsx`, `app/globals.css`, `components/*.tsx`, `hooks/`, `metadata.json` |
-| **SER10 agents** | `lib/threadle-projection.ts`, `lib/server/**`, `app/api/threadle/**`, `scripts/**`, `docs/**`, `.github/**`, `.coderabbit.yaml`, tests; plus the workspace-level `../mise.toml` on SER10 (not in this repo) |
+| **SER10 agents** | `threadle/**` (our engine code), `lib/threadle-projection.ts`, `lib/server/**`, `app/api/threadle/**`, `scripts/**`, `docs/**`, `.github/**`, `.coderabbit.yaml`, tests; plus the workspace-level `../mise.toml` on SER10 (not in this repo) |
 | **Shared — PR only, never direct-push edits** | `lib/types.ts` (the corpus schema), `lib/threadle-engine.ts`, `package.json` |
-| **Never commit** | Threadle upstream source, `threadle-bin/`, `data/`, `node_modules/`, `.next/` |
+| **Never commit** | `threadle/**/bin`, `threadle/**/obj`, `threadle-bin/`, `data/`, `node_modules/`, `.next/` (the `threadle/` source itself IS committed — it is our engine) |
 
 - AI Studio: do not edit SER10-owned paths. If a UI change needs a new API/prop, describe it
   in your summary instead of inventing it in `lib/server/` or `lib/types.ts`.
@@ -72,9 +74,10 @@ works where it is strongest, not a conflict-avoidance regime:
 
 ## Threadle (the engine)
 
-- Upstream: `https://github.com/carlnordlund/Threadle`, pinned in `scripts/setup-threadle.sh`.
-  Build on SER10: `dotnet build Threadle.CLIconsole -c Release -o ../threadle-bin`.
-  Never patch the upstream clone in place; if Core changes are ever needed, fork first.
+- Engine source: `threadle/` in this repo (see `threadle/PROVENANCE.md` for origin).
+  Build: `dotnet build threadle/Threadle.CLIconsole -c Release -o threadle-bin`
+  (.NET 10 SDK; on SER10 the workspace mise pin provides it). Edit freely — it is our
+  code now; there is no upstream to stay in sync with. Keep `threadle/Threadle.Tests` green.
 - Interop is the CLI's JSON mode: `threadle --json`, one JSON object per stdin line
   (`{"command":…,"assign":…,"args":{…}}`), one JSON result per stdout line. Args are all
   strings. **The process exit code is always 0** — success is only the JSON `Success`/`Code`.
@@ -104,14 +107,13 @@ works where it is strongest, not a conflict-avoidance regime:
 npm run dev        # UI dev server
 npm run build      # production build / typecheck gate
 npm test           # engine + projection tests (node test runner via tsx)
-./scripts/setup-threadle.sh   # clone + build pinned Threadle into ../threadle-bin
+./scripts/build-threadle.sh   # dotnet build threadle/Threadle.CLIconsole (in-repo engine)
 ```
-
 ## Testing rules
 
 - New projection/client code ships with tests in the same PR. Golden-line fixtures for the
-  Threadle JSON protocol live with the client; if upstream's protocol changes, fixtures fail
-  first — that's the point.
+  Threadle JSON protocol live with the client; protocol changes (ours to make) must land
+  as one PR touching CLI + fixtures + TS client together.
 - Tests must run green on SER10 (`npm test`) before a PR is marked ready. PR CI runs on
   **GitHub-hosted runners** — never the SER10 self-hosted runner on `pull_request`
   (public repo: that would run untrusted code on the home network). The SER10 runner is
