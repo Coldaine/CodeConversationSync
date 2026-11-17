@@ -152,7 +152,7 @@ Threadle edges carry **one float and nothing else**: no timestamps, no provenanc
 | Gemini analysis (`app/api/analyze`) | not graph at all | Stays a Next server route (Studio-compatible); its output becomes ingest proposals committed through the projection |
 | Timeline swimlanes, zoom, bar spans, filters, continuation packets | view math | Stays in `lib/threadle-engine.ts` (pure TS, testable) — this file is an asset, keep it |
 
-Persistence story after merge: graph (`.bin` via `savefile`, nodeset sidecar file in same dir) + `corpus-text.json` + `overrides.json`, all under `/ser10-data/projects/threadle-workspace/data/`, all git-ignored except seed fixtures. The seed corpus becomes a one-time import fixture and is then deleted as a data source.
+Persistence story after merge: graph (`.bin` via `savefile`, nodeset sidecar file in same dir) + `corpus-text.json` + `overrides.json`, all under `/ser10-data/projects/threadle-workspace/data/`, all git-ignored except seed fixtures. **The whole `data/` tree lives inside a gocryptfs-encrypted directory (H5, §11.1)** — `/ser10-data` is plain ext4, Threadle has no database and no encryption of its own, so encryption at rest is the filesystem's job: vault mounted only while the app runs, key never in the repo. The seed corpus becomes a one-time import fixture and is then deleted as a data source.
 
 **Durability contract (U5):** a commit = mutate graph → `savefile` → write sidecar → *then* respond. Startup = `loadfile` + sidecar reconcile against `getalledges`. Unsaved state does not exist; there is no write-behind cache to lose in the Phase 2 crash test.
 
@@ -247,7 +247,7 @@ Repo is public deliberately: free bot review. Order matters — **bots first, pr
 - **Check:** on SER10, Map topology renders from the sidecar with the binary stopped/started mid-session (client recovers, committed data intact per U5); latency harness produces the numbers for the §6 gate (N2: ingest batch p95, 5 concurrent reads, restart time); `communitydetection` determinism probe with/without `randomseed` (N4).
 
 ### Phase 3 — Persistence & ingest for real
-- Corpus load/save via `savefile`/`loadfile` (`.bin` + nodeset sidecar) + `corpus-text.json` + `overrides.json` under `data/`; seed-data demoted to import fixture, then removed as a runtime source.
+- Corpus load/save via `savefile`/`loadfile` (`.bin` + nodeset sidecar) + `corpus-text.json` + `overrides.json` under `data/`; seed-data demoted to import fixture, then removed as a runtime source. **Encrypted at rest (H5):** `data/` is a gocryptfs vault — include vault init, mount-on-start/unmount-on-stop, and key handling (key in SER10 secret store, never in repo) in this phase's deliverables, with a check that the unmounted vault leaks no readable transcript text (`grep` the cipher dir for a known string).
 - IngestModal commits through `POST /api/threadle/commit` (Gemini proposes → user confirms → graph write under U5 durability); overrides via the same route, applied in the read DTO (§5/U6).
 - v1 insights only (§4.1): community suggestions in Ingest, components-based forgotten-work panel, degree-based Map sizing. No Diagnostics page, no graph-position panel (backlog §4.2).
 - **Check:** ingest a real transcript on SER10, restart app + sidecar, corpus (incl. override, visible via `meta.overridesApplied`) survives byte-identical; forgotten-work panel flags a deliberately isolated task; Studio-branch experiment (N1) result recorded here before any ruleset work.

@@ -5,6 +5,11 @@ coding agents on SER10, and Google AI Studio (Build mode / Antigravity). Humans 
 
 ## What this project is
 
+Working name: **CodeConversationSync** (final product name TBD by the owner). Do **not**
+call this product "Threadle" — Threadle is the upstream graph engine only
+(`carlnordlund/Threadle`). Legacy mockup files named `ThreadleApp`/`ThreadleCorpus`
+predate this rule and will be renamed when the product name lands.
+
 A unified map of multi-host coding work: sessions (Claude Code, Codex, Droid, OMP, Maestro,
 ChatGPT), Wispr Flow dictations, projects/tasks, deliverables, evidence, and decision lineage —
 across 6 hosts (SER10, N5, Blood Arrow, Primary Desktop, Gemini Laptop, Icarus).
@@ -32,10 +37,11 @@ projection/client for Threadle, collectors, and docs. Read before starting:
   workspace. If activation ever breaks, fix the mise pin (`mise use`), never paper
   over it with committed `DOTNET_ROOT` exports.
 
-## File ownership (critical — Google AI Studio is a co-editor)
+## File ownership (which tool edits which file)
 
-AI Studio syncs the whole repo, rewrites whole files, and resolves conflicts by picking a
-side per file. Ownership prevents silent loss:
+AI Studio (Gemini) and SER10 agents both edit this repo, coordinated by the owner
+personally — ownership below is a *which-tool-for-which-file* convention so each tool
+works where it is strongest, not a conflict-avoidance regime:
 
 | Owner | Paths |
 |---|---|
@@ -77,8 +83,20 @@ side per file. Ownership prevents silent loss:
   metadata lives in `data/corpus-text.json` sidecar, keyed by `(layer, from_ext, to_ext)`);
   node attributes are typed (char/int/float/bool/string), single-valued, ≤255 total.
   Dates are epoch-seconds ints. Long text never goes in node attributes.
-- Analysis results are written back as node attributes with the `an_` prefix
-  (`an_community`, `an_pagerank`, …). Never mix them into domain attributes.
+- Analysis results are stored as node attributes; **our code** names them with the
+  `an_<analysis>_<layer>` convention (upstream defaults are unprefixed). Never mix
+  analysis attributes into domain attributes.
+
+## Runtime rules (SER10, recorded owner decisions)
+
+- The app binds **`127.0.0.1` only** (access via SSH tunnel). No auth exists; do not
+  widen the bind address without adding auth first.
+- Threadle has **no database and no encryption** — corpus persistence is its `.bin`/TSV
+  files plus our JSON sidecar. The `data/` tree must live in the **gocryptfs-encrypted**
+  vault on SER10 (mounted only while the app runs; key never in this repo). Never write
+  transcripts or corpus files outside the vault, and never commit them.
+- Threadle analysis calls must pass `attrname=an_<analysis>_<layer>` explicitly
+  (upstream defaults are unprefixed and collide across layers).
 
 ## Commands (on SER10, in the repo root)
 
