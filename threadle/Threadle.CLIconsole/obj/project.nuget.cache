@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "dgSpecHash": "Yz+0T673/u0=",
+  "success": true,
+  "projectFilePath": "/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.CLIconsole/Threadle.CLIconsole.csproj",
+  "expectedPackageFiles": [
+    "/home/coldaine/.nuget/packages/microsoft.net.illink.tasks/10.0.15/microsoft.net.illink.tasks.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.runtime.linux-x64/10.0.15/microsoft.netcore.app.runtime.linux-x64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.runtime.win-x64/10.0.15/microsoft.netcore.app.runtime.win-x64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.runtime.win-x86/10.0.15/microsoft.netcore.app.runtime.win-x86.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.runtime.win-arm64/10.0.15/microsoft.netcore.app.runtime.win-arm64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.runtime.linux-arm/10.0.15/microsoft.netcore.app.runtime.linux-arm.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.runtime.linux-arm64/10.0.15/microsoft.netcore.app.runtime.linux-arm64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.runtime.osx-x64/10.0.15/microsoft.netcore.app.runtime.osx-x64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.runtime.osx-arm64/10.0.15/microsoft.netcore.app.runtime.osx-arm64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.aspnetcore.app.runtime.linux-x64/10.0.15/microsoft.aspnetcore.app.runtime.linux-x64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.aspnetcore.app.runtime.win-x64/10.0.15/microsoft.aspnetcore.app.runtime.win-x64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.aspnetcore.app.runtime.win-x86/10.0.15/microsoft.aspnetcore.app.runtime.win-x86.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.aspnetcore.app.runtime.win-arm64/10.0.15/microsoft.aspnetcore.app.runtime.win-arm64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.aspnetcore.app.runtime.linux-arm/10.0.15/microsoft.aspnetcore.app.runtime.linux-arm.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.aspnetcore.app.runtime.linux-arm64/10.0.15/microsoft.aspnetcore.app.runtime.linux-arm64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.aspnetcore.app.runtime.osx-x64/10.0.15/microsoft.aspnetcore.app.runtime.osx-x64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.aspnetcore.app.runtime.osx-arm64/10.0.15/microsoft.aspnetcore.app.runtime.osx-arm64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.host.win-x64/10.0.15/microsoft.netcore.app.host.win-x64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.host.win-x86/10.0.15/microsoft.netcore.app.host.win-x86.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.host.win-arm64/10.0.15/microsoft.netcore.app.host.win-arm64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.host.linux-arm/10.0.15/microsoft.netcore.app.host.linux-arm.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.host.linux-arm64/10.0.15/microsoft.netcore.app.host.linux-arm64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.host.osx-x64/10.0.15/microsoft.netcore.app.host.osx-x64.10.0.15.nupkg.sha512",
+    "/home/coldaine/.nuget/packages/microsoft.netcore.app.host.osx-arm64/10.0.15/microsoft.netcore.app.host.osx-arm64.10.0.15.nupkg.sha512"
+  ],
+  "logs": []
+}

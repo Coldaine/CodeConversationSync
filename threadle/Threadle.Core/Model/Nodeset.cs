@@ -1,0 +1,1087 @@
+﻿using Threadle.Core.Model.Enums;
+using Threadle.Core.Utilities;
+
+namespace Threadle.Core.Model
+{
+    /// <summary>
+    /// Describes a Nodeset, consisting of a set of node id, a node attribute definition manager,
+    /// and node attributes.
+    /// </summary>
+    public class Nodeset : IStructure
+    {
+        #region Fields
+        /// <summary>
+        /// Storage container for nodes WITH attributes
+        /// </summary>
+        private Dictionary<uint, (List<byte> AttrIndexes, List<NodeAttributeValue> AttrValues)> _nodesWithAttributes = new();
+
+        /// <summary>
+        /// Storage container for nodes WITHOUT attributes
+        /// </summary>
+        private HashSet<uint> _nodesWithoutAttributes = new();
+
+        /// <summary>
+        /// Internal array storing an array of all nodeId uint values. Lazy-initialized by NodeIdArray
+        /// </summary>
+        private uint[]? _nodeIdCache;
+
+        /// <summary>
+        /// Pool of unique string values for string-typed node attributes. The pool index is stored
+        /// as the IntValue of the corresponding NodeAttributeValue.
+        /// </summary>
+        private List<string> _stringPool = [];
+
+        /// <summary>
+        /// Reverse lookup from string value to pool index, for O(1) deduplication.
+        /// </summary>
+        private Dictionary<string, int> _stringPoolLookup = [];
+
+        #endregion
+
+
+        #region Constructors
+        /// <summary>
+        /// Initializes a new instance of the <see cref="Nodeset"/> class.
+        /// </summary>
+        public Nodeset()
+        {
+            Name = string.Empty;
+            NodeAttributeDefinitionManager = new NodeAttributeDefinitionManager();
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="Nodeset"/> class, with the given name.
+        /// The Nodeset is empty by default but this can be adjusted. If set to a positive integer,
+        /// the created nodes will have Id numbers starting from 0.
+        /// </summary>
+        /// <param name="name">The name of the Nodeset.</param>
+        /// <param name="createNodes">The number of nodes that are to be created from the start.</param>
+        public Nodeset(string name, int createNodes = 0)
+        {
+            InitSizeNodesWithoutAttributes(createNodes);
+            Name = name;
+            NodeAttributeDefinitionManager = new NodeAttributeDefinitionManager();
+            if (createNodes > 0)
+                for (uint i = 0; i < createNodes; i++)
+                    _addNodeWithoutAttribute(i);
+            IsModified = false;
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="Nodeset"/> class, with the given name.
+        /// Also creates a set of nodes based on the provided HashSet of unique unsigned integers.
+        /// This constructor is mainly intended for import functions, when the nodeset is created
+        /// based on the node Ids discovered during the edge parsing process.
+        /// </summary>
+        /// <param name="name">The name of the Nodeset</param>
+        /// <param name="nodeIds">A HashSet of unique id numbers (uint) for the nodes to be created.</param>
+        public Nodeset(string name, HashSet<uint> nodeIds)
+        {
+            Name = name;
+            NodeAttributeDefinitionManager = new NodeAttributeDefinitionManager();
+            _nodesWithoutAttributes = nodeIds;
+            IsModified = false;
+        }
+        #endregion
+
+
+        #region Properties
+        /// <summary>
+        /// Gets or sets the name of the Nodeset
+        /// </summary>
+        public string Name { get; set; }
+
+        /// <summary>
+        /// Returns content info about this structure as a list of strings
+        /// </summary>
+        public List<string> Preview
+        {
+            get
+            {
+                List<string> lines = [$"Nodeset: {Name}"];
+                int count = 10;
+                foreach (uint nodeId in NodeIdArray)
+                {
+                    if (count <= 0)
+                        break;
+                    lines.Add($"Node {nodeId}");
+                    if (_nodesWithAttributes.TryGetValue(nodeId, out var attributes))
+                        for (int i = 0; i < attributes.AttrIndexes.Count; i++)
+                        {
+                            byte attrIndex = attributes.AttrIndexes[i];
+                            NodeAttributeDefinitionManager.TryGetAttributeType(attrIndex, out NodeAttributeType attrType);
+                            string displayValue = attrType == NodeAttributeType.String
+                                ? GetStringFromPool((int)attributes.AttrValues[i].GetValue(attrType)!)
+                                : attributes.AttrValues[i].ToString(attrType);
+                            lines.Add($" {NodeAttributeDefinitionManager.IndexToName[attrIndex]}: {displayValue}");
+                            //lines.Add($" {NodeAttributeDefinitionManager.IndexToName[attrIndex]}: {attributes.AttrValues[i].ToString(attrType)}");
+
+                        }
+                    //lines.Add($" {NodeAttributeDefinitionManager.IndexToName[attributes.AttrIndexes[i]]}: {attributes.AttrValues[i]}");
+                    count--;
+                }
+                return lines;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the Filename (if this structure is loaded or saved to file)
+        /// </summary>
+        public string Filepath { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets the flag whether this structure has been modified or not since last load/initiation
+        /// </summary>
+        public bool IsModified { get; set; }
+
+        /// <summary>
+        /// Returns a dictionary with meta-information about this Nodeset, including its attributes.
+        /// </summary>
+        public Dictionary<string, object> Info => new Dictionary<string, object>
+        {
+            ["Type"] = "Nodeset",
+            ["Name"] = Name,
+            ["Filepath"] = Filepath,
+            ["isModified"] = IsModified,
+            ["NbrNodes"] = Count,
+            ["NodeAttributes"] = NodeAttributeDefinitionManager.GetMetadataList(),
+            ["EstimatedMemory"] = Misc.FormatBytes(GetEstimatedBytes())
+        };
+
+        /// <summary>
+        /// Reference to the manager for node attribute definitions
+        /// </summary>
+        public NodeAttributeDefinitionManager NodeAttributeDefinitionManager { get; init; }
+
+        /// <summary>
+        /// Returns an array of all NodeId uint values. How this is done depends mainly
+        /// on whether the 'nodecache' user setting is true or false. If active (true), the lazy-initialized
+        /// nodeIdCache is used: first time this array is requested, the array is generated and stored in memory
+        /// before being returned. Subsequent calls to NodeArray will return the same, already stored array.
+        /// Note that this nodecache array will be deleted as soon as a new node is added or removed.
+        /// If the 'nodecache' user setting is inactive (false), the array of Node objects is created on-the-fly.
+        /// This saves memory - no need for permanent storing Nodes in array as well as in the dictionary - but
+        /// the array must be created everytime it is called.
+        /// </summary>
+        /// <remarks>
+        /// if picking a random node from the network many times while not adding/removing any nodes in between,
+        /// or if memory isn't critical, the nodecache can be active (its default). If memory is critical and if 
+        /// picking random nodes isn't crucial, it can be turned off.
+        /// </remarks>
+        public uint[] NodeIdArray
+        {
+            get
+            {
+                if (UserSettings.NodeCache)
+                {
+                    if (_nodeIdCache == null)
+                        _nodeIdCache = _getAllNodeIds();
+                    return _nodeIdCache;
+                }
+                return _getAllNodeIds();
+            }
+        }
+
+        /// <summary>
+        /// Returns an array of all NodeId uint values for nodes without node attributes.
+        /// Used by binary writer as it separates between nodes with and without attributes.
+        /// </summary>
+        internal uint[] NodeIdArrayWithoutAttributes => _nodesWithoutAttributes.ToArray();
+
+        /// <summary>
+        /// Returns an array of all NodeId uint values for nodes with node attributes
+        /// Used by binary reader as it separates between nodes with and without attributes.
+        /// </summary>
+        internal uint[] NodeIdArrayWithAttributes => _nodesWithAttributes.Keys.ToArray();
+
+        /// <summary>
+        /// Returns the number of nodes in this Nodeset.
+        /// </summary>
+        public int Count { get { return _nodesWithAttributes.Count + _nodesWithoutAttributes.Count; } }
+
+        /// <summary>
+        /// Exposes the string pool for binary serialization.
+        /// </summary>
+        public IReadOnlyList<string> StringPool => _stringPool;
+        #endregion
+
+
+        #region Methods (public)
+        /// <summary>
+        /// Merges two nodesets into a new one: the union of their node ids, and the union of their
+        /// defined node attributes. A node attribute name defined in both sources must have the same
+        /// <see cref="NodeAttributeType"/> in both — a type mismatch always fails the merge, since that
+        /// signals two genuinely different attributes sharing a name by accident. Values are then
+        /// resolved per node and attribute: if only one source has a value set, that value is used; if
+        /// both have a value set and they agree, that value is used; if both have a value set and they
+        /// disagree, <paramref name="onValueConflict"/> decides. A node missing a value in one source is
+        /// never treated as a conflict. Attributes expected to vary between the two sources (e.g. a
+        /// per-period measure like income) should be renamed with their period beforehand, so that only
+        /// genuinely static attributes (e.g. gender, birthyear) remain under a shared name.
+        /// </summary>
+        /// <param name="nodeset1">The first nodeset to merge.</param>
+        /// <param name="nodeset2">The second nodeset to merge.</param>
+        /// <param name="name">The name for the new, merged nodeset.</param>
+        /// <param name="onValueConflict">How to resolve a node attribute value set differently in both sources.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, with the merged Nodeset.</returns>
+        public static OperationResult<Nodeset> Merge(Nodeset nodeset1, Nodeset nodeset2, string name, AttributeConflictPolicy onValueConflict = AttributeConflictPolicy.Fail)
+        {
+            List<string> names1 = nodeset1.GetDefinedAttributeNames();
+            List<string> names2 = nodeset2.GetDefinedAttributeNames();
+            List<string> allNames = new(names1);
+            foreach (string attrName in names2)
+                if (!allNames.Contains(attrName))
+                    allNames.Add(attrName);
+
+            var attrTypes = new Dictionary<string, NodeAttributeType>();
+            foreach (string attrName in allNames)
+            {
+                var def1 = nodeset1.NodeAttributeDefinitionManager.GetNodeAttributeDefinition(attrName);
+                var def2 = nodeset2.NodeAttributeDefinitionManager.GetNodeAttributeDefinition(attrName);
+                if (def1 is not null && def2 is not null && def1.Value.AttrType != def2.Value.AttrType)
+                    return OperationResult<Nodeset>.Fail("AttributeTypeMismatch", $"Attribute '{attrName}' is defined as '{def1.Value.AttrType}' in nodeset '{nodeset1.Name}' but '{def2.Value.AttrType}' in nodeset '{nodeset2.Name}'; rename one before merging.");
+                attrTypes[attrName] = def1?.AttrType ?? def2!.Value.AttrType;
+            }
+
+            HashSet<uint> allIds = new(nodeset1.NodeIdArray);
+            allIds.UnionWith(nodeset2.NodeIdArray);
+            Nodeset merged = new(name, allIds);
+
+            var mergedIndex = new Dictionary<string, byte>();
+            foreach (string attrName in allNames)
+            {
+                OperationResult<byte> defineResult = merged.DefineNodeAttribute(attrName, attrTypes[attrName]);
+                if (!defineResult.Success)
+                    return OperationResult<Nodeset>.Fail(defineResult);
+                mergedIndex[attrName] = defineResult.Value;
+            }
+
+            foreach (uint id in allIds)
+            {
+                foreach (string attrName in allNames)
+                {
+                    NodeAttributeType type = attrTypes[attrName];
+                    var result1 = nodeset1.GetNodeAttribute(id, attrName);
+                    var result2 = nodeset2.GetNodeAttribute(id, attrName);
+                    bool has1 = result1.Success;
+                    bool has2 = result2.Success;
+                    if (!has1 && !has2)
+                        continue;
+
+                    string? str1 = null, str2 = null;
+                    if (type == NodeAttributeType.String)
+                    {
+                        if (has1)
+                            str1 = nodeset1.GetStringFromPool((int)result1.Value.Value.GetValue(type)!);
+                        if (has2)
+                            str2 = nodeset2.GetStringFromPool((int)result2.Value.Value.GetValue(type)!);
+                    }
+
+                    bool useFirst;
+                    if (has1 && has2)
+                    {
+                        // Float must compare by numeric value, not raw bit pattern: 0.0 and -0.0
+                        // have different bits but are the same value and must not be flagged as
+                        // a conflict. Int/Bool/Char have no such distinct-bits-same-value case, so
+                        // the cheaper bitwise comparison is still used for them.
+                        bool equal = type switch
+                        {
+                            NodeAttributeType.String => str1 == str2,
+                            NodeAttributeType.Float => (float)result1.Value.Value.GetValue(type)! == (float)result2.Value.Value.GetValue(type)!,
+                            _ => result1.Value.Value.RawValueAsInt() == result2.Value.Value.RawValueAsInt()
+                        };
+                        if (equal)
+                            useFirst = true;
+                        else
+                            switch (onValueConflict)
+                            {
+                                case AttributeConflictPolicy.KeepFirst:
+                                    useFirst = true;
+                                    break;
+                                case AttributeConflictPolicy.KeepLast:
+                                    useFirst = false;
+                                    break;
+                                default:
+                                    return OperationResult<Nodeset>.Fail("AttributeValueConflict", $"Node {id} has conflicting values for attribute '{attrName}': '{(type == NodeAttributeType.String ? str1 : result1.Value.Value.ToString(type))}' in '{nodeset1.Name}' vs '{(type == NodeAttributeType.String ? str2 : result2.Value.Value.ToString(type))}' in '{nodeset2.Name}'.");
+                            }
+                    }
+                    else
+                        useFirst = has1;
+
+                    NodeAttributeValue finalValue = type == NodeAttributeType.String
+                        ? new NodeAttributeValue(merged.GetOrAddStringToPool((useFirst ? str1 : str2)!))
+                        : (useFirst ? result1.Value.Value : result2.Value.Value);
+                    merged.SetNodeAttribute(id, mergedIndex[attrName], finalValue);
+                }
+            }
+
+            return OperationResult<Nodeset>.Ok(merged, $"Merged nodesets '{nodeset1.Name}' and '{nodeset2.Name}' into '{name}': {allIds.Count} node(s), {allNames.Count} attribute(s).");
+        }
+
+        /// <summary>
+        /// Adds a node with the specified nodeid to this Nodeset. Checks that it doesn't already exist.
+        /// Initially the node has no attributes.
+        /// </summary>
+        /// <param name="nodeId">The id of the node that is to be added.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult AddNode(uint nodeId)
+        {
+            if (Contains(nodeId))
+                return OperationResult.Fail("NodeAlreadyExists", $"Node with ID '{nodeId}' already exists in nodeset '{Name}'.");
+            _nodesWithoutAttributes.Add(nodeId);
+            _modified();
+            return OperationResult.Ok($"Node ID '{nodeId}' added to nodeset '{Name}'.");
+        }
+
+        /// <summary>
+        /// Removes the specified node id from this Nodeset, setting the Nodeset as being modified.
+        /// </summary>
+        /// <param name="nodeId">The id of the node that is to be removed.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult RemoveNode(uint nodeId)
+        {
+            if (_nodesWithoutAttributes.Remove(nodeId) || _nodesWithAttributes.Remove(nodeId))
+            {
+                _modified();
+                return OperationResult.Ok($"Node '{nodeId}' removed from nodeset '{Name}'.");
+            }
+            return OperationResult.Fail("NodeNotFound", $"Node '{nodeId}' not found in nodeset '{Name}'.");
+        }
+
+        /// <summary>
+        /// Returns the node id specified by its index position in the NodeIdArray
+        /// Useful for traversing all nodes (when its better to have the nodecache active)
+        /// </summary>
+        /// <param name="index">The index position of the node.</param>
+        /// <returns>The Node id or null if no node found at this index.</returns>
+        public uint? GetNodeIdByIndex(uint index)
+        {
+            if (index < NodeIdArray.Length)
+                return NodeIdArray[index];
+            return null;
+        }
+
+        /// <summary>
+        /// Defines a new node attribute for this Nodeset with the given name and the specific attribute type
+        /// as given by the provided string representation. Acts as a wrapper to the subsequent
+        /// <see cref="DefineNodeAttribute(string, NodeAttributeType)"/> method.
+        /// </summary>
+        /// <param name="attrName">The name of the nodal attribute (must be unique in this Nodeset).</param>
+        /// <param name="attributeType">The textual representation of this node attribute type (either 'char','int','float', or 'bool').</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult DefineNodeAttribute(string attrName, string attrTypeStr)
+        {
+            if (!(Misc.GetAttributeType(attrTypeStr) is NodeAttributeType attrType))
+                return OperationResult.Fail("InvalidAttributeType", $"Attribute type '{attrTypeStr}' not recognized.");
+            return DefineNodeAttribute(attrName, attrType);
+        }
+
+        /// <summary>
+        /// Undefines the node attribute with the specified name. This will also remove this attribute from all nodes.
+        /// </summary>
+        /// <param name="attrName">The name of the nodal attribute to undefine.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult UndefineNodeAttribute(string attrName)
+        {
+            OperationResult<byte> result = NodeAttributeDefinitionManager.UndefineNodeAttribute(attrName);
+            if (!result.Success)
+                return result;
+
+            // Remove this attribute from all nodes and possibly move nodes to the collection for nodes without attributes
+            byte oldAttrIndex = result.Value;
+            List<uint> nodesNowWithoutAttributes = new();
+            foreach (var nodeId in _nodesWithAttributes.Keys)
+            {
+                if (!RemoveNodeAttribute(nodeId, oldAttrIndex))
+                    // The node has no more attributes left - mark it for moving to Hashset
+                    nodesNowWithoutAttributes.Add(nodeId);
+            }
+            // Iterate through nodes that now lost all attributes: move them to the HashSet instead
+            foreach (uint nodeId in nodesNowWithoutAttributes)
+            {
+                _nodesWithAttributes.Remove(nodeId);
+                _nodesWithoutAttributes.Add(nodeId);
+            }
+            return OperationResult.Ok($"Node attribute '{attrName}' is no longer defined.");
+        }
+
+        /// <summary>
+        /// Renames a defined node attribute. The attribute's index and all currently set values are
+        /// unaffected — only the name it is looked up by changes.
+        /// </summary>
+        /// <param name="from">The current name of the node attribute.</param>
+        /// <param name="to">The new name for the node attribute.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult RenameNodeAttribute(string from, string to)
+        {
+            OperationResult result = NodeAttributeDefinitionManager.RenameNodeAttribute(from, to);
+            if (result.Success)
+                _modified();
+            return result;
+        }
+
+        /// <summary>
+        /// Duplicates a node attribute under a new name, copying its type and all currently set
+        /// values for every node that has it set. The original attribute is unaffected.
+        /// </summary>
+        /// <param name="from">The current name of the node attribute to duplicate.</param>
+        /// <param name="to">The name for the new, duplicated node attribute.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult DuplicateNodeAttribute(string from, string to)
+        {
+            var definition = NodeAttributeDefinitionManager.GetNodeAttributeDefinition(from);
+            if (definition is null)
+                return OperationResult.Fail("AttributeUnknown", $"Node attribute '{from}' not found.");
+            byte fromIndex = definition.Value.Index;
+            NodeAttributeType attrType = definition.Value.AttrType;
+            to = to.Trim();
+            if (to.Length < 1)
+                return OperationResult.Fail("MissingAttributeName", "New name of attribute must be at least one character.");
+            if (NodeAttributeDefinitionManager.CheckIfAttributeNameExists(to))
+                return OperationResult.Fail("AttributeAlreadyExists", $"Node attribute named '{to}' already defined.");
+
+            OperationResult<byte> defineResult = DefineNodeAttribute(to, attrType);
+            if (!defineResult.Success)
+                return defineResult;
+            byte toIndex = defineResult.Value;
+
+            foreach (var kvp in _nodesWithAttributes)
+            {
+                int idx = kvp.Value.AttrIndexes.IndexOf(fromIndex);
+                if (idx >= 0)
+                    SetNodeAttribute(kvp.Key, toIndex, kvp.Value.AttrValues[idx]);
+            }
+            _modified();
+            return OperationResult.Ok($"Node attribute '{from}' duplicated as '{to}'.");
+        }
+
+        /// <summary>
+        /// Converts a node attribute to a new type, under a new name: the original attribute is
+        /// never touched or removed. Each node's value is converted independently by formatting it
+        /// as a string (the same formatting used when exporting or displaying it) and re-parsing
+        /// that string as the new type, using the exact same parser <see cref="SetNodeAttribute(uint, string, string)"/>
+        /// already uses for CLI string arguments. A value that doesn't parse as the new type - e.g.
+        /// a non-numeric string converted to Int, or a multi-character string converted to Char -
+        /// is simply left unset on the new attribute for that node, same as a node that had no value
+        /// for the source attribute at all; nothing else aborts because of it. Converting a String to
+        /// Float or Int keeps that parser's native handling of "NaN"/"Infinity" as real values, not
+        /// as missing data.
+        /// </summary>
+        /// <param name="from">The current name of the node attribute to convert.</param>
+        /// <param name="to">The name for the new, converted node attribute.</param>
+        /// <param name="newTypeStr">The type to convert to ('int', 'char', 'float', 'bool', or 'string').</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, including how many
+        /// node values converted versus were left unset.</returns>
+        public OperationResult ConvertNodeAttributeType(string from, string to, string newTypeStr)
+        {
+            if (!(Misc.GetAttributeType(newTypeStr) is NodeAttributeType newType))
+                return OperationResult.Fail("InvalidAttributeType", $"Attribute type '{newTypeStr}' not recognized.");
+
+            var definition = NodeAttributeDefinitionManager.GetNodeAttributeDefinition(from);
+            if (definition is null)
+                return OperationResult.Fail("AttributeUnknown", $"Node attribute '{from}' not found.");
+            byte fromIndex = definition.Value.Index;
+            NodeAttributeType fromType = definition.Value.AttrType;
+            to = to.Trim();
+            if (to.Length < 1)
+                return OperationResult.Fail("MissingAttributeName", "New name of attribute must be at least one character.");
+            if (NodeAttributeDefinitionManager.CheckIfAttributeNameExists(to))
+                return OperationResult.Fail("AttributeAlreadyExists", $"Node attribute named '{to}' already defined.");
+
+            OperationResult<byte> defineResult = DefineNodeAttribute(to, newType);
+            if (!defineResult.Success)
+                return defineResult;
+            byte toIndex = defineResult.Value;
+
+            int converted = 0, skipped = 0;
+            foreach (var kvp in _nodesWithAttributes)
+            {
+                int idx = kvp.Value.AttrIndexes.IndexOf(fromIndex);
+                if (idx < 0)
+                    continue;
+                NodeAttributeValue oldValue = kvp.Value.AttrValues[idx];
+                string str = fromType == NodeAttributeType.String
+                    ? GetStringFromPool((int)oldValue.GetValue(fromType)!)
+                    : oldValue.ToString(fromType);
+
+                NodeAttributeValue? newValue = newType == NodeAttributeType.String
+                    ? new NodeAttributeValue(GetOrAddStringToPool(str))
+                    : Misc.CreateNodeAttributeValueFromTypeAndString(newType, str);
+
+                if (newValue is NodeAttributeValue nav)
+                {
+                    SetNodeAttribute(kvp.Key, toIndex, nav);
+                    converted++;
+                }
+                else
+                    skipped++;
+            }
+            _modified();
+            return OperationResult.Ok($"Node attribute '{from}' ({fromType}) converted to '{to}' ({newType}): {converted} converted, {skipped} skipped.");
+        }
+
+        /// <summary>
+        /// Returns the names of all currently defined node attributes, in definition (index) order.
+        /// </summary>
+        /// <returns>A list of node attribute names.</returns>
+        public List<string> GetDefinedAttributeNames()
+            => NodeAttributeDefinitionManager.GetAllNodeAttributeDefinitions()
+                .OrderBy(d => d.Index)
+                .Select(d => d.AttrName)
+                .ToList();
+
+        /// <summary>
+        /// Returns a table of attribute values for the given nodes and attribute names, one column per
+        /// attribute, each an array parallel to <paramref name="nodeIds"/>. Used by getattrstable() as the
+        /// bulk-export counterpart to importnodeattributes(). A node lacking a value for an attribute (or
+        /// not present in the nodeset at all) gets a null entry for that attribute, rather than failing.
+        /// </summary>
+        /// <param name="nodeIds">The node ids to include, one row per id (in the given order).</param>
+        /// <param name="attrNames">The attribute names to include as columns, or null for all currently defined attributes.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, with the requested columns.</returns>
+        public OperationResult<Dictionary<string, object?[]>> GetNodeAttributesTable(uint[] nodeIds, string[]? attrNames)
+        {
+            string[] names = attrNames ?? GetDefinedAttributeNames().ToArray();
+            var defs = new (byte Index, NodeAttributeType Type)[names.Length];
+            for (int a = 0; a < names.Length; a++)
+            {
+                if (!NodeAttributeDefinitionManager.TryGetAttributeIndex(names[a], out byte idx) ||
+                    !NodeAttributeDefinitionManager.TryGetAttributeType(idx, out NodeAttributeType type))
+                    return OperationResult<Dictionary<string, object?[]>>.Fail("AttributeUnknown", $"Unknown attribute '{names[a]}' in nodeset '{Name}'.");
+                defs[a] = (idx, type);
+            }
+
+            var columns = new Dictionary<string, object?[]>();
+            for (int a = 0; a < names.Length; a++)
+                columns[names[a]] = new object?[nodeIds.Length];
+
+            for (int i = 0; i < nodeIds.Length; i++)
+            {
+                uint nodeId = nodeIds[i];
+                for (int a = 0; a < names.Length; a++)
+                {
+                    NodeAttributeValue? value = GetNodeAttribute(nodeId, defs[a].Index);
+                    columns[names[a]][i] = value is NodeAttributeValue nav
+                        ? (defs[a].Type == NodeAttributeType.String
+                            ? GetStringFromPool((int)nav.GetValue(defs[a].Type)!)
+                            : nav.GetValue(defs[a].Type))
+                        : null;
+                }
+            }
+            return OperationResult<Dictionary<string, object?[]>>.Ok(columns, $"Returning attribute table for {nodeIds.Length} node(s) and {names.Length} attribute(s).");
+        }
+
+        /// <summary>
+        /// Sets the specific attrValue for the node attribute of the selected node id.
+        /// </summary>
+        /// <param name="nodeId">The unique id of the node</param>
+        /// <param name="attrName">The name of the node attribute.</param>
+        /// <param name="attrValueStr">The attrValue of this attribute expressed as a string.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult SetNodeAttribute(uint nodeId, string attrName, string attrValueStr)
+        {
+            if (!Contains(nodeId))
+                return OperationResult.Fail("NodeNotFound", $"Node ID '{nodeId}' not found in nodeset '{Name}'.");
+            if (!NodeAttributeDefinitionManager.TryGetAttributeIndex(attrName, out byte attrIndex))
+                return OperationResult.Fail("AttributeUnknown", $"Unknown attribute '{attrName}' in nodeset '{Name}'.");
+            if (!NodeAttributeDefinitionManager.TryGetAttributeType(attrIndex, out NodeAttributeType attrType))
+                return OperationResult.Fail("AttributeTypeNotFound", $"No type found for attribute '{attrName}' in nodeset '{Name}': possibly corrupted.");
+
+            NodeAttributeValue attrValue;
+
+            if (attrType == NodeAttributeType.String)
+            {
+                attrValue = new NodeAttributeValue(GetOrAddStringToPool(attrValueStr));
+            }
+            else
+            {
+                if (!(Misc.CreateNodeAttributeValueFromTypeAndString(attrType, attrValueStr) is NodeAttributeValue parsed))
+                    return OperationResult.Fail("ParseAttributeValueError", $"Could not convert string '{attrValueStr}' to type '{attrType}'.");
+                attrValue = parsed;
+
+            }
+
+
+            SetNodeAttribute(nodeId, attrIndex, attrValue);
+            return OperationResult.Ok($"Attribute '{attrName}' for node {nodeId} set to {attrValueStr}.");
+        }
+
+        /// <summary>
+        /// Sets the attribute for multiple nodes, either to one common value (<paramref name="attrValueStr"/>) or
+        /// to one value per node (<paramref name="attrValueStrs"/>, same length and order as <paramref name="nodeIds"/>).
+        /// If <paramref name="nodeIds"/> is null, the common value is set for all nodes in the nodeset; per-node
+        /// values always require <paramref name="nodeIds"/>. A node id may appear more than once: the last value wins.
+        /// All or nothing: all nodes and values are checked before anything is written, so any error leaves the
+        /// nodeset unchanged.
+        /// </summary>
+        /// <param name="nodeIds">The node ids, or null for all nodes in the nodeset.</param>
+        /// <param name="attrName">The name of the node attribute.</param>
+        /// <param name="attrValueStr">The common value, expressed as a string (or null if per-node values are given).</param>
+        /// <param name="attrValueStrs">The per-node values, expressed as strings (or null if a common value is given).</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, including the number of nodes updated.</returns>
+        public OperationResult SetNodeAttributes(uint[]? nodeIds, string attrName, string? attrValueStr, string[]? attrValueStrs)
+        {
+            if ((attrValueStr == null) == (attrValueStrs == null))
+                return OperationResult.Fail("InvalidArguments", "Exactly one of a common value (attrvalue) or per-node values (attrvalues) must be provided.");
+            if (attrValueStrs != null && nodeIds == null)
+                return OperationResult.Fail("MissingNodes", "Per-node values (attrvalues) require the nodes they apply to (nodes).");
+            if (attrValueStrs != null && attrValueStrs.Length != nodeIds!.Length)
+                return OperationResult.Fail("LengthMismatch", $"The number of values ({attrValueStrs.Length}) differs from the number of nodes ({nodeIds.Length}).");
+            if (!NodeAttributeDefinitionManager.TryGetAttributeIndex(attrName, out byte attrIndex))
+                return OperationResult.Fail("AttributeUnknown", $"Unknown attribute '{attrName}' in nodeset '{Name}'.");
+            if (!NodeAttributeDefinitionManager.TryGetAttributeType(attrIndex, out NodeAttributeType attrType))
+                return OperationResult.Fail("AttributeTypeNotFound", $"No type found for attribute '{attrName}' in nodeset '{Name}': possibly corrupted.");
+            nodeIds ??= NodeIdArray;
+            foreach (uint nodeId in nodeIds)
+                if (!Contains(nodeId))
+                    return OperationResult.Fail("NodeNotFound", $"Node ID '{nodeId}' not found in nodeset '{Name}'.");
+
+            // Parse all values before writing anything. String values are only added to the string pool
+            // after all checks have passed, so that a failed call leaves the pool unchanged as well.
+            string[] valueStrs = attrValueStrs ?? [attrValueStr!];
+            NodeAttributeValue[] values = new NodeAttributeValue[valueStrs.Length];
+            if (attrType != NodeAttributeType.String)
+                for (int i = 0; i < valueStrs.Length; i++)
+                {
+                    if (Misc.CreateNodeAttributeValueFromTypeAndString(attrType, valueStrs[i]) is not NodeAttributeValue parsed)
+                        return OperationResult.Fail("ParseAttributeValueError", $"Could not convert string '{valueStrs[i]}' to type '{attrType}'.");
+                    values[i] = parsed;
+                }
+            else
+                for (int i = 0; i < valueStrs.Length; i++)
+                    values[i] = new NodeAttributeValue(GetOrAddStringToPool(valueStrs[i]));
+
+            for (int i = 0; i < nodeIds.Length; i++)
+                SetNodeAttribute(nodeIds[i], attrIndex, values[attrValueStrs == null ? 0 : i]);
+            int nbrNodes = nodeIds.Distinct().Count();
+            return OperationResult.Ok($"Attribute '{attrName}' set for {nbrNodes} node(s) in nodeset '{Name}'.");
+        }
+
+        /// <summary>
+        /// Gets the specific attrValue for the node attribute of the selected node id.
+        /// </summary>
+        /// <param name="nodeId">The unique id of the node.</param>
+        /// <param name="attrName">The name of the node attribute.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, with the requested <see cref="NodeAttributeValue"/>.</returns>
+        public OperationResult<(NodeAttributeValue Value, NodeAttributeType Type)> GetNodeAttribute(uint nodeId, string attrName)
+        {
+            if (!Contains(nodeId))
+                return OperationResult<(NodeAttributeValue, NodeAttributeType)>.Fail("NodeNotFound", $"Node ID '{nodeId}' not found in nodeset '{Name}'.");
+            if (!NodeAttributeDefinitionManager.TryGetAttributeIndex(attrName, out byte attrIndex))
+                return OperationResult<(NodeAttributeValue, NodeAttributeType)>.Fail("AttributeUnknown", $"Unknown attribute '{attrName}' in nodeset '{Name}'.");
+            if (!NodeAttributeDefinitionManager.TryGetAttributeType(attrIndex, out NodeAttributeType attrType))
+                return OperationResult<(NodeAttributeValue, NodeAttributeType)>.Fail("AttributeTypeNotFound", $"No type found for attribute '{attrName}' in nodeset '{Name}' - possibly corrupted.");
+
+            if (!(GetNodeAttribute(nodeId, attrIndex) is NodeAttributeValue attrValue))
+                return OperationResult<(NodeAttributeValue, NodeAttributeType)>.Fail("AttributeNotSet", $"Attribute '{attrName}' not set for node '{nodeId}' in nodeset '{Name}'.");
+            return OperationResult<(NodeAttributeValue, NodeAttributeType)>.Ok((attrValue, attrType));
+        }
+
+        /// <summary>
+        /// Gets a string node attribute value, resolving the pool index to the actual string.
+        /// Use this instead of GetNodeAttribute when the attribute type is String.
+        /// </summary>
+        public OperationResult<string> GetNodeAttributeString(uint nodeId, string attrName)
+        {
+            var result = GetNodeAttribute(nodeId, attrName);
+            if (!result.Success)
+                return OperationResult<string>.Fail(result);
+            var (nav, type) = result.Value;
+            if (type != NodeAttributeType.String)
+                return OperationResult<string>.Fail("AttributeTypeMismatch", $"Attribute '{attrName}' is not of type String.");
+            return OperationResult<string>.Ok(GetStringFromPool((int)nav.GetValue(type)!));
+        }
+
+        public OperationResult<Dictionary<uint, object?>> GetMultipleNodeAttributes(uint[] nodeIds, string attrName)
+        {
+            if (!NodeAttributeDefinitionManager.CheckIfAttributeNameExists(attrName))
+                return OperationResult<Dictionary<uint, object?>>.Fail("AttributeUnknown", $"Unknown attribute '{attrName}' in nodeset '{Name}'.");
+
+            var result = new Dictionary<uint, object?>();
+            foreach (uint nodeId in nodeIds)
+            {
+                if (!Contains(nodeId))
+                    continue;
+                var attrResult = GetNodeAttribute(nodeId, attrName);
+                if (attrResult.Success)
+                {
+                    var (nav, type) = attrResult.Value;
+                    result[nodeId] = type == NodeAttributeType.String
+                        ? GetStringFromPool((int)nav.GetValue(type)!)
+                        : nav.GetValue(type);
+                    //result[nodeId] = nav.GetValue(type);
+                }
+                else
+                    result[nodeId] = null;
+            }
+            return OperationResult<Dictionary<uint, object?>>.Ok(result);
+        }
+
+        /// <summary>
+        /// Remove specific node attribute from the selected node id.
+        /// If the node has no more attributes left, move it to the container for nodes without attributes
+        /// </summary>
+        /// <param name="nodeId">The node id.</param>
+        /// <param name="attrName">The name of the node attribute.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult RemoveNodeAttribute(uint nodeId, string attrName)
+        {
+            if (!Contains(nodeId))
+                return OperationResult.Fail("NodeNotFound", $"Node ID '{nodeId}' not found in nodeset '{Name}'.");
+            if (!NodeAttributeDefinitionManager.TryGetAttributeIndex(attrName, out byte attrIndex))
+                return OperationResult.Fail("AttributeUnknown", $"Unknown attribute '{attrName}' in nodeset '{Name}'.");
+            if (!_nodesWithAttributes.TryGetValue(nodeId, out var attributes))
+                return OperationResult<NodeAttributeValue>.Fail("AttributeNotSet", $"Attribute '{attrName}' not set for node '{nodeId}' in nodeset '{Name}'.");
+            if (!_removeAttributeFromTuple(attributes, attrIndex))
+            {
+                _nodesWithAttributes.Remove(nodeId);
+                _nodesWithoutAttributes.Add(nodeId);
+            }
+            return OperationResult.Ok($"Attribute '{attrName}' removed for node {nodeId}.");
+        }
+
+        /// <summary>
+        /// Returns a list of node ids in this nodeset.
+        /// Returns a maximum of 1000 nodes starting with the first one in the set of nodes, but
+        /// this can be adjusted.
+        /// </summary>
+        /// <param name="offset">The index of the node to start with (defaults to 0).</param>
+        /// <param name="limit">The maximum number of nodes to return.</param>
+        /// <returns>Returns an OperationResult object with the list of node ids (nodeIds) (given the offset and limit).</returns>
+        public OperationResult<List<uint>> GetAllNodes(int offset = 0, int limit = 1000)
+        {
+            offset = (offset < 0) ? 0 : offset;
+            limit = (limit < 0) ? 0 : limit;
+            uint[] allNodes = NodeIdArray;
+            int total = allNodes.Length;
+            var nodes = allNodes.Skip(offset).Take(limit).ToList();
+            string message;
+            if (total == 0)
+                message = $"Nodeset '{Name}' has no nodes.";
+            else if (nodes.Count == 0)
+                message = $"Offset {offset} is beyond the available nodes in nodeset '{Name}' (total: {total}).";
+            else if (offset == 0 && nodes.Count == total)
+                message = $"Returning all {total} nodes in nodeset '{Name}':";
+            else
+                message = $"Returning nodes {offset + 1} - {offset + nodes.Count} of {total} in nodeset '{Name}':";
+            return OperationResult<List<uint>>.Ok(nodes, message);
+        }
+
+        public long GetEstimatedBytes()
+        {
+            int Na = _nodesWithAttributes.Count;
+            int Nw = _nodesWithoutAttributes.Count;
+            // _ nodesWithAttributes: dictionary entries + buckets
+            long bytes = (long)Na * 28 + (long)(Na / 0.72 + 1) * 4;
+            // per attributed node:
+            // - List<byte>: 32 (object) + 16 (array) + 4 = 52 bytes
+            // - List<NodeAttributeValue>: 32 (object) + 16(array) + 4*4 = 64 bytes
+            // total: 116 bytes
+            bytes += (long)Na * 116;
+            // Sample up to 100 attributed nodes to estimate average attribute count,
+            // then calculate: 1 byte (attribute index) + 4 byte (NodeAttributeValue) per attribute
+            if (Na > 0)
+            {
+                int sampleSize = Math.Min(100, Na);
+                int totalAttrs = 0;
+                int sampled = 0;
+                foreach (var attrs in _nodesWithAttributes.Values)
+                {
+                    totalAttrs += attrs.AttrIndexes.Count;
+                    if (++sampled >= sampleSize)
+                        break;
+                }
+                double avgAttrs = (double)totalAttrs / sampled;
+                bytes += (long)(Na * avgAttrs * 5);
+            }
+            // nodesWithoutAttributes: just hashset entries + buckets
+            bytes += (long)Nw * 12 + (long)(Nw / 0.72 + 1) * 4;
+            if (_nodeIdCache != null)
+                bytes += 16 + (long)_nodeIdCache.Length * 4;
+            return bytes;
+        }
+        #endregion
+
+
+        #region Method (internal)
+        /// <summary>
+        /// Checks if the Nodeset contains the two nodes with the specified ids.
+        /// This one returns a proper OperationResult informing which, or if both, were missing.
+        /// </summary>
+        /// <param name="node1Id">The id of the first node that is to be checked.</param>
+        /// <param name="node2Id">The id of the second node that is to be checked.</param>
+        /// <returns>An <see cref="OperationResult.Success"> if both are found, Fail otherwise.</returns>
+        internal OperationResult CheckThatNodesExist(uint node1Id, uint node2Id)
+        {
+            bool node1exists = Contains(node1Id);
+            bool node2exists = Contains(node2Id);
+            if (node1exists && node2exists)
+                return OperationResult.Ok();
+            if (!node1exists && !node2exists)
+                return OperationResult.Fail("NodeNotFound", $"Neither node {node1Id} nor node {node2Id} found in nodeset '{Name}'.");
+            if (!node1exists)
+                return OperationResult.Fail("NodeNotFound", $"Node {node1Id} not found in nodeset '{Name}'.");
+            return OperationResult.Fail("NodeNotFound", $"Node {node2Id} not found in nodeset '{Name}'.");
+        }
+
+        /// <summary>
+        /// Defines a new node attribute for this Nodeset with the given name and
+        /// <see cref="NodeAttributeType"/>. Each node attribute in a <see cref="Nodeset"> must have a unique name.
+        /// Whereas <see cref="DefineNodeAttribute(string, string)"/> provides the node attribute as a string, this
+        /// method provides it as a <see cref="NodeAttributeType"/> enum.
+        /// Returns the attribute index of the created node attribute if successful.
+        /// </summary>
+        /// <param name="attrName">The name of the nodal attribute (must be unique in this Nodeset).</param>
+        /// <param name="attrType">The type (using the <see cref="NodeAttributeType"/> enum) of this attribute.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, including the internal attribute index of the
+        /// added attribute.</returns>
+        internal OperationResult<byte> DefineNodeAttribute(string attrName, NodeAttributeType attrType)
+        {
+            OperationResult<byte> result = NodeAttributeDefinitionManager.DefineNewNodeAttribute(attrName, attrType);
+            if (result.Success)
+                _modified();
+            return result;
+        }
+
+        /// <summary>
+        /// Defines and sets node attribute values for multiple nodes based on the provided dictionary of nodeId=>attributeValueStr.
+        /// If the attribute is already defined, it checks that the provided type matches the existing type. If it exists but with a different type,
+        /// an error is returned. If the attribute is not yet defined, it is defined based on the provided type.
+        /// </summary>
+        /// <param name="attrName">The name of the node attribute.</param>
+        /// <param name="attrDict">The dictionary of nodeId=>attributeValueStr.</param>
+        /// <param name="attrType">The type of the node attribute.</param>
+        /// <returns>Returns an <see cref="OperationResult"/> informing how well it went.</returns>
+        internal OperationResult DefineAndSetNodeAttributeValues(string attrName, Dictionary<uint, string> attrDict, NodeAttributeType attrType)
+        {
+            if (!NodeAttributeDefinitionManager.TryGetAttributeIndex(attrName, out byte attrIndex))
+            {
+                OperationResult<byte> defineresult = DefineNodeAttribute(attrName, attrType);
+                if (!defineresult.Success)
+                    return defineresult;
+                attrIndex = defineresult.Value;
+            }
+            else
+            {
+                if (NodeAttributeDefinitionManager.IndexToType[attrIndex] != attrType)
+                    return OperationResult.Fail("ConstraintAttributeTypeMismatch", $"Attribute '{attrName}' already defined with type '{NodeAttributeDefinitionManager.IndexToType[attrIndex]}', cannot set values of type '{attrType}'.");
+            }
+            foreach ((uint nodeId, string attrValueStr) in attrDict)
+                SetNodeAttribute(nodeId, attrName, attrValueStr);
+            _modified();
+            return OperationResult.Ok($"Node attribute '{attrName}' set for {attrDict.Count} nodes in nodeset '{Name}'.");
+        }
+
+        /// <summary>
+        /// Adds a Node to the collection of nodes without attributes.
+        /// No verification is done: to be used with loaders.
+        /// </summary>
+        /// <param name="nodeId">The node id to add.</param>
+        internal void _addNodeWithoutAttribute(uint nodeId)
+        {
+            if (_nodesWithoutAttributes.Add(nodeId))
+                _nodeIdCache = null;
+        }
+
+        /// <summary>
+        /// Adds a node with the specified nodeId to this Nodeset. Possible to provide an optional attribute tuple
+        /// where node attribute indices are mapped on <see cref="NodeAttributeValue"/> objects.
+        /// </summary>
+        /// <param name="nodeId">The node id to add.</param>
+        /// <param name="nodeAttributes">A tuple with index and attrValue lists for attributes.</param>
+        internal void _addNodeWithAttributes(uint nodeId, (List<byte> attrIndexes, List<NodeAttributeValue> attrValues)? nodeAttributes)
+        {
+            if (nodeAttributes != null && nodeAttributes.Value.attrIndexes.Count > 0)
+                _nodesWithAttributes[nodeId] = (nodeAttributes.Value.attrIndexes, nodeAttributes.Value.attrValues);
+            else
+                _nodesWithoutAttributes.Add(nodeId);
+            _nodeIdCache = null;
+        }
+
+
+        /// <summary>
+        /// Checks if the Nodeset contains a node object with the specified id.
+        /// </summary>
+        /// <param name="nodeId">The id of the node that is to be checked.</param>
+        /// <returns>True if the node id exists, false otherwise.</returns>
+        internal bool Contains(uint nodeId)
+        {
+            return _nodesWithoutAttributes.Contains(nodeId) || _nodesWithAttributes.ContainsKey(nodeId);
+        }
+
+        /// <summary>
+        /// Sets a node attribute for a specific node, given the attribute index and attribute attrValue.
+        /// If node lacks attributes, it is moved to the dictionary for attributes and the new attribute is installed.
+        /// If the node has attributes, it first checks if this attribute exists: if so, it overwrites the existing attrValue.
+        /// Otherwise: it adds this as a new attribute.
+        /// </summary>
+        /// <param name="nodeId">The node id.</param>
+        /// <param name="attrIndex">The attribute index.</param>
+        /// <param name="attrValue">The <see cref="NodeAttributeValue"/> to set the attribute to.</param>
+        internal void SetNodeAttribute(uint nodeId, byte attrIndex, NodeAttributeValue attrValue)
+        {
+            if (!_nodesWithAttributes.TryGetValue(nodeId, out var attributes))
+            {
+                _nodesWithoutAttributes.Remove(nodeId);
+                _nodesWithAttributes.Add(nodeId, (new() { attrIndex }, new() { attrValue }));
+            }
+            else
+            {
+                int index = attributes.AttrIndexes.IndexOf(attrIndex);
+                if (index >= 0)
+                    attributes.AttrValues[index] = attrValue;
+                else
+                {
+                    attributes.AttrIndexes.Add(attrIndex);
+                    attributes.AttrValues.Add(attrValue);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Gets the specified attribute from a specific node id based on the attribute index.
+        /// Returns null if the node does not have this attribute (or no attributes whatsoever)
+        /// </summary>
+        /// <param name="nodeId">The node id.</param>
+        /// <param name="attrIndex">The attribute index.</param>
+        /// <returns>Returns a <see cref="NodeAttributeValue"/>, or null if attribute is missing.</returns>
+        internal NodeAttributeValue? GetNodeAttribute(uint nodeId, byte attrIndex)
+        {
+            if (!_nodesWithAttributes.TryGetValue(nodeId, out var attributes))
+                return null;
+            int index = attributes.AttrIndexes.IndexOf(attrIndex);
+            if (index >= 0)
+                return attributes.AttrValues[index];
+            return null;
+        }
+
+        /// <summary>
+        /// Removes the specified attribute from a node and shifts its lists of attribute indexes and attribute values.
+        /// Returns false if it doesn't have any attributes before or after removal. Returns true if it has attributes
+        /// left after removal.
+        /// </summary>
+        /// <param name="nodeId">The node id</param>
+        /// <param name="attrIndex">The attribute index</param>
+        /// <returns>Returns true if it still has attributes left, false if it has no attributes before or after removal.</returns>
+        internal bool RemoveNodeAttribute(uint nodeId, byte attrIndex)
+        {
+            if (!_nodesWithAttributes.TryGetValue(nodeId, out var attributes))
+                return false;
+            return _removeAttributeFromTuple(attributes, attrIndex);
+        }
+
+        /// <summary>
+        /// Clones the attribute tuple for a specific node. Returns null if the node lacks attributes.
+        /// </summary>
+        /// <param name="nodeId">The node id</param>
+        /// <returns>The attribute tuple, or null if missing.</returns>
+        internal (List<byte>, List<NodeAttributeValue>)? CloneNodeAttributeTuple(uint nodeId)
+        {
+            if (_nodesWithAttributes.TryGetValue(nodeId, out var attributes))
+            {
+                return (new List<byte>(attributes.AttrIndexes), new List<NodeAttributeValue>(attributes.AttrValues));
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Gets the node attribute tuple for a specific node id. Returns null if it lacks attributes.
+        /// </summary>
+        /// <param name="nodeId">The node id</param>
+        /// <returns>The attribute tuple, or null if missing.</returns>
+        internal (List<byte> AttrIndexes, List<NodeAttributeValue> AttrValues)? GetNodeAttributeTuple(uint nodeId)
+        {
+            if (_nodesWithAttributes.TryGetValue(nodeId, out var attributes))
+                return attributes;
+            return null;
+        }
+
+        /// <summary>
+        /// Initialize the capacity of the Hashset storing nodes without attributes
+        /// </summary>
+        /// <param name="nbrNodesWithoutAttributes">Upper range of number of nodes</param>
+        internal void InitSizeNodesWithoutAttributes(int nbrNodesWithoutAttributes)
+        {
+            _nodesWithoutAttributes = new(nbrNodesWithoutAttributes);
+        }
+
+        /// <summary>
+        /// Initialize the capacity of the Dictionary storing nodes with attributes
+        /// </summary>
+        /// <param name="nbrNodesWithAttributes">Upper range of number of nodes</param>
+        internal void InitSizeNodesWithAttributes(int nbrNodesWithAttributes)
+        {
+            _nodesWithAttributes = new(nbrNodesWithAttributes);
+        }
+
+        /// <summary>
+        /// Returns the pool index for the given string, adding it to the pool if not already present.
+        /// </summary>
+        internal int GetOrAddStringToPool(string value)
+        {
+            if (_stringPoolLookup.TryGetValue(value, out int index))
+                return index;
+            index = _stringPool.Count;
+            _stringPool.Add(value);
+            _stringPoolLookup[value] = index;
+            return index;
+        }
+
+        /// <summary>
+        /// Returns the string at the given pool index.
+        /// </summary>
+        internal string GetStringFromPool(int index)
+            => (index >= 0 && index < _stringPool.Count) ? _stringPool[index] : "(invalid)";
+        #endregion
+
+
+        #region Private methods
+        /// <summary>
+        /// Support function for new nodeCache to get all nodeIds
+        /// </summary>
+        /// <returns></returns>
+        private uint[] _getAllNodeIds()
+        {
+            int totalNbrNodes = _nodesWithAttributes.Count + _nodesWithoutAttributes.Count;
+            uint[] allNodes = new uint[totalNbrNodes];
+            _nodesWithAttributes.Keys.CopyTo(allNodes, 0);
+            _nodesWithoutAttributes.CopyTo(allNodes, _nodesWithAttributes.Count);
+            Array.Sort(allNodes);
+            return allNodes;
+        }
+
+        /// <summary>
+        /// Methods that flags the Nodeset as being modified since last load/save, also
+        /// clearing the _nodeIdCache
+        /// </summary>
+        private void _modified()
+        {
+            IsModified = true;
+            _nodeIdCache = null;
+
+        }
+
+        /// <summary>
+        /// Removes the specified attribute from a attribute tuple and 'shifts' the items
+        /// (places the last item where this was).
+        /// </summary>
+        /// <param name="nodeId">The node id</param>
+        /// <param name="attributeIndex">The attribute index</param>
+        /// <returns>Returns true if it still has attributes left, false if all attributes are gone now.</returns>
+        private bool _removeAttributeFromTuple((List<byte> AttrIndexes, List<NodeAttributeValue> AttrValues) attributes, byte attributeIndex)
+        {
+            int index = attributes.AttrIndexes.IndexOf(attributeIndex);
+            if (index >= 0)
+            {
+                int lastIndex = attributes.AttrIndexes.Count - 1;
+                attributes.AttrIndexes[index] = attributes.AttrIndexes[lastIndex];
+                attributes.AttrValues[index] = attributes.AttrValues[lastIndex];
+
+                attributes.AttrIndexes.RemoveAt(lastIndex);
+                attributes.AttrValues.RemoveAt(lastIndex);
+            }
+            return (attributes.AttrIndexes.Count > 0);
+        }
+        #endregion
+    }
+}

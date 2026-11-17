@@ -1,0 +1,10 @@
+/tmp/threadle-vendor-test/Threadle.Core.deps.json
+/tmp/threadle-vendor-test/Threadle.Core.dll
+/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.Core/obj/Release/net10.0/Threadle.Core.GeneratedMSBuildEditorConfig.editorconfig
+/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.Core/obj/Release/net10.0/Threadle.Core.AssemblyInfoInputs.cache
+/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.Core/obj/Release/net10.0/Threadle.Core.AssemblyInfo.cs
+/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.Core/obj/Release/net10.0/Threadle.Core.csproj.CoreCompileInputs.cache
+/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.Core/obj/Release/net10.0/Threadle.Core.sourcelink.json
+/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.Core/obj/Release/net10.0/Threadle.Core.dll
+/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.Core/obj/Release/net10.0/refint/Threadle.Core.dll
+/ser10-data/projects/threadle-workspace/CodeConversationSync/threadle/Threadle.Core/obj/Release/net10.0/ref/Threadle.Core.dll

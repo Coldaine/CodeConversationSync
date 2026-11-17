@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Threadle.CLIconsole": {
+      "commandName": "Project",
+      "workingDirectory": "$(ProjectDir)\\Examples"
+    }
+  }
+}

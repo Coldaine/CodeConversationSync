@@ -1,0 +1,55 @@
+﻿using Threadle.CLIconsole.Parsing;
+using Threadle.CLIconsole.Results;
+using Threadle.CLIconsole.Runtime;
+using Threadle.Core.Model;
+using Threadle.Core.Processing;
+using Threadle.Core.Processing.Enums;
+using Threadle.Core.Utilities;
+
+namespace Threadle.CLIconsole.Commands
+{
+    /// <summary>
+    /// Class representing the 'filter' CLI command.
+    /// </summary>
+    public class Filter : ICommand
+    {
+        /// <summary>
+        /// Gets the command syntax definition as shown in help and usage output.
+        /// </summary>
+        public string Syntax => "[var:nodeset] = filter(nodeset = [var:nodeset2], attrname = [str], cond=['eq','ne','gt','lt','ge','le','isnull','notnull'], +attrvalue = [str])";
+
+        /// <summary>
+        /// Gets a human-readable description of what the command does.
+        /// </summary>
+        public string Description => "Creates and stores a new nodeset [var:nodeset] containing all the nodes in [var:nodeset2] that fulfills the specified condition 'cond' concerning the specified attribute 'attrname' and the reference value 'attrvalue'. The new nodeset and its nodes and attributes constitute a partial deep copy of the inbound nodeset, making them completely independent from each other. Note: when checking for 'isnull' or 'notnull', the 'attrvalue' argument can be ignored.";
+
+        /// <summary>
+        /// Gets a value indicating whether this command produces output that must be assigned to a variable.
+        /// </summary>
+        public bool ToAssign => true;
+
+        /// <summary>
+        /// Executes the command.
+        /// </summary>
+        /// <param name="command">The parsed <see cref="CommandPackage"/> to be executed.</param>
+        /// <param name="context">The <see cref="CommandContext"/> providing shared console variable memory.</param>
+        public CommandResult Execute(CommandPackage command, CommandContext context)
+        {
+            string variableName = command.GetAssignmentVariableNameThrowExceptionIfNull();
+            if (CommandHelpers.TryGetVariable<Nodeset>(context, command.GetArgumentThrowExceptionIfMissingOrNull("nodeset", "arg0"), out var nodeset) is CommandResult commandResult)
+                return commandResult;
+            string attrName = command.GetArgumentThrowExceptionIfMissingOrNull("attrname", "arg1");
+            ConditionType conditionType = command.GetArgumentParseEnumThrowExceptionIfMissingOrNull<ConditionType>("cond", "arg2");
+            string attrValue = (conditionType == ConditionType.isnull || conditionType == ConditionType.notnull) ? "" : command.GetArgumentThrowExceptionIfMissingOrNull("attrvalue", "arg3");
+            OperationResult<Nodeset> result = NodesetProcessor.Filter(nodeset, attrName, conditionType, attrValue);
+            if (!result.Success)
+                return CommandResult.FromOperationResult(result);
+            context.SetVariable(variableName, result.Value!);
+            return CommandResult.FromOperationResult(
+                opResult: result,
+                payload: null,
+                assignments: CommandResult.Assigning(variableName, typeof(Nodeset))
+                );
+        }
+    }
+}
