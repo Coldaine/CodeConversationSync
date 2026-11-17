@@ -1,0 +1,569 @@
+﻿using System.Globalization;
+using System.Text;
+using Threadle.Core.Model;
+using Threadle.Core.Model.Enums;
+using Threadle.Core.Processing.Enums;
+using Threadle.Core.Utilities.Enums;
+
+namespace Threadle.Core.Utilities
+{
+    /// <summary>
+    /// All these methods are useful methods for working with networks, layers, edgesets etc
+    /// But for actual mathematical analyses of networks, supporting Analyses.cs, these are
+    /// instead found in Analysis/Functions.cs
+    /// </summary>
+    public static class Misc
+    {
+        #region Fields
+        /// <summary>
+        /// Provides an instance of the random number generator.
+        /// </summary>
+        [ThreadStatic]
+        private static Random? _random;
+
+        /// <summary>
+        /// Collection of characters that could pop up in value quoting in csv files
+        /// </summary>
+        private static char[] _quoteChars = new char[] {
+            '"',
+            '\'',
+            '\u201C',   // Left double quotes
+            '\u201D',   // Right double quote
+            '\u2018',   // Left single quote
+            '\u2019'    // Right single quote
+        };
+        #endregion
+
+
+        #region Properties
+        /// <summary>
+        /// Gets a shared instance of the <see cref="Random"/> class for generating random numbers.
+        /// </summary>
+        internal static Random Random => _random ??= new Random();
+        #endregion
+
+
+        #region Methods (public)
+        /// <summary>
+        /// Method to set the random seed of the RNG used here in Misc and Threadle at large.
+        /// Used for replication purposes.
+        /// </summary>
+        /// <param name="seed">The seed to set the random number generator to</param>
+        public static void SetRandomSeed(int seed)
+        {
+            _random = new Random(seed);
+        }
+
+        /// <summary>
+        /// Returns true if the provided name is within the binary limit of 255 bytes when encoded in UTF-8, and false otherwise.
+        /// </summary>
+        /// <param name="str">The string to check</param>
+        /// <returns>True if the provided string is within the binary limit.</returns>
+        public static bool IsNameWithinBinaryLimit(string str) => Encoding.UTF8.GetByteCount(str) <= 255;
+
+        /// <summary>
+        /// Converts a string of char-separated node ids into an array of these uint values.
+        /// </summary>
+        /// <param name="nodesString">A string with char-separated integer values.</param>
+        /// <param name="sep">The separator character that should be used (default is semicolon ;)</param>
+        /// <returns>Returns an array of unsigned integers.</returns>
+        public static uint[]? SplitStringToUintArray(string nodesString, char sep = ';')
+        {
+            var parts = nodesString.Split(sep);
+            var result = new uint[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+                if (!uint.TryParse(parts[i].Trim(), out result[i]))
+                    return null;
+            return result;
+        }
+
+        /// <summary>
+        /// Converts a string of char-separated float values into an array of these float values.
+        /// </summary>
+        /// <param name="valuesString">A string with char-separated float values.</param>
+        /// <param name="sep">The separator character that should be used (default is semicolon ;)</param>
+        /// <returns>Returns an array of floats, or null if any part could not be parsed.</returns>
+        public static float[]? SplitStringToFloatArray(string valuesString, char sep = ';')
+        {
+            var parts = valuesString.Split(sep);
+            var result = new float[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+                if (!float.TryParse(parts[i].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out result[i]))
+                    return null;
+            return result;
+        }
+        #endregion
+
+
+        #region Methods (internal)
+        /// <summary>
+        /// Evaluates a condition by comparing the value of a node attribute to a specified comparison value using the
+        /// provided condition type.
+        /// </summary>
+        /// <param name="nodeValue">The value of the node attribute to evaluate. The type of the value is determined by the <see
+        /// cref="NodeAttributeValue.Type"/> property.</param>
+        /// <param name="comparisonValue">The value to compare against as a string type.</param>
+        /// <param name="condition">The <see cref="ConditionType"/> to evaluate.</param>
+        /// <returns><see langword="true"/> if the condition is satisfied based on the comparison; otherwise, <see
+        /// langword="false"/>.</returns>
+        internal static bool EvaluateCondition(NodeAttributeValue AttrValue, NodeAttributeType AttrType, string comparisonValue, ConditionType condition)
+        {
+            switch (AttrType)
+            {
+                case NodeAttributeType.Int:
+                    if (!int.TryParse(comparisonValue, out int intVal))
+                        return false;
+                    return CompareValues(Convert.ToInt32(AttrValue.GetValue(AttrType)), intVal, condition);
+                case NodeAttributeType.Float:
+                    if (!float.TryParse(comparisonValue, out float floatVal))
+                        return false;
+                    return CompareValues(Convert.ToSingle(AttrValue.GetValue(AttrType)), floatVal, condition);
+                case NodeAttributeType.Bool:
+                    if (!bool.TryParse(comparisonValue, out bool boolVal))
+                        return false;
+                    return CompareValues(Convert.ToBoolean(AttrValue.GetValue(AttrType)), boolVal, condition);
+                case NodeAttributeType.Char:
+                    if (comparisonValue.Length != 1)
+                        return false;
+                    return CompareValues(Convert.ToChar(AttrValue.GetValue(AttrType)), comparisonValue[0], condition);
+                case NodeAttributeType.String:
+                    return false;
+                default:
+                    return false;
+            }
+        }
+
+        internal static bool EvaluateConditionString(string resolvedValue, string comparisonValue, ConditionType condition)
+        {
+            return CompareValues(resolvedValue, comparisonValue, condition);
+        }
+
+        /// <summary>
+        /// Compares two values of a specified type based on the provided condition.
+        /// </summary>
+        /// <remarks>This method uses the <see cref="IComparable{T}.CompareTo"/> method to perform the
+        /// comparison. Supported conditions include equality, inequality, greater than, greater than or equal to, less
+        /// than, and less than or equal to.</remarks>
+        /// <typeparam name="T">The type of the values to compare. Must implement <see cref="IComparable{T}"/>.</typeparam>
+        /// <param name="nodeVal">The first value to compare.</param>
+        /// <param name="compVal">The second value to compare.</param>
+        /// <param name="condition">The condition to evaluate the comparison. Must be one of the values defined in <see cref="ConditionType"/>.</param>
+        /// <returns><see langword="true"/> if the comparison satisfies the specified condition; otherwise, <see
+        /// langword="false"/>.</returns>
+        internal static bool CompareValues<T>(T nodeVal, T compVal, ConditionType condition) where T : IComparable<T>
+        {
+            int cmp = nodeVal.CompareTo(compVal);
+            return condition switch
+            {
+                ConditionType.eq => cmp == 0,
+                ConditionType.ne => cmp != 0,
+                ConditionType.gt => cmp > 0,
+                ConditionType.ge => cmp >= 0,
+                ConditionType.lt => cmp < 0,
+                ConditionType.le => cmp <= 0,
+                _ => false
+            };
+        }
+
+        internal static NodeAttributeValue? CreateNodeAttributeValueFromTypeAndString(NodeAttributeType type, string valueStr)
+        {
+            return type switch
+            {
+                NodeAttributeType.Int => int.TryParse(valueStr, out int i) ? new NodeAttributeValue(i) : null,
+                NodeAttributeType.Float => float.TryParse(valueStr, out float f) ? new NodeAttributeValue(f) : null,
+                NodeAttributeType.Bool => bool.TryParse(valueStr, out bool b) ? new NodeAttributeValue(b) : null,
+                NodeAttributeType.Char => valueStr.Length == 1 ? new NodeAttributeValue(valueStr[0]) : null,
+                NodeAttributeType.String => null,
+                _ => null
+            };
+        }
+
+        /// <summary>
+        /// Calculates the number of potential edges in a graph based on the number of nodes,  edge directionality, and
+        /// whether self-loops are allowed.
+        /// </summary>
+        /// <param name="n">The number of nodes in the graph. Must be a non-negative value.</param>
+        /// <param name="directionality">Specifies whether the graph is directed or undirected using <see cref="EdgeDirectionality"/> values.</param>
+        /// <param name="selfties">A boolean value indicating whether self-loops are allowed.</param>
+        /// <returns>The total number of potential edges in the graph. This value is calculated based on the  specified number of
+        /// nodes, directionality, and self-loop allowance.</returns>
+        internal static ulong GetNbrPotentialEdges(ulong n, EdgeDirectionality directionality, bool selfties)
+        {
+            if (n == 0)
+                return 0;
+            if (directionality == EdgeDirectionality.Directed)
+                return selfties ? n * n : n * (n - 1);
+            else
+                return selfties ? n * (n + 1) / 2 : n * (n - 1) / 2;
+        }
+
+        /// <summary>
+        /// Helper methods for converting textual representation of a type of node attribute to
+        /// a <see cref="NodeAttributeType"/> Enum. If the attributeTypeName is not recognized, it returns null
+        /// </summary>
+        /// <remarks>
+        /// Rather than a switch statement, this could also be done using a Enum.TryParse() statement, but
+        /// the switch was chosen for clarity.
+        /// </remarks>
+        /// <param name="attributeTypeName">The textual representation of this node attribute type (either 'char','int','float', or 'bool').</param>
+        /// <returns>The corresponding <see cref="NodeAttributeType"/> value.</returns>
+        internal static NodeAttributeType? GetAttributeType(string attributeTypeName)
+            => attributeTypeName.ToLowerInvariant() switch
+            {
+                "char" => NodeAttributeType.Char,
+                "int" => NodeAttributeType.Int,
+                "float" => NodeAttributeType.Float,
+                "bool" => NodeAttributeType.Bool,
+                "string" => NodeAttributeType.String,
+                _ => null
+            };
+
+        /// <summary>
+        /// Adjusts the connection value based on the specified edge type.
+        /// </summary>
+        /// <param name="value">The input value to be adjusted.</param>
+        /// <param name="valueType">The type of edge that determines how the value is adjusted.  Use <see cref="EdgeType.Binary"/> for binary
+        /// adjustment, or other types for no modification.</param>
+        /// <returns>The adjusted connection value. For <see cref="EdgeType.Binary"/>, returns 1 if <paramref name="value"/> is
+        /// greater than 0; otherwise, 0.  For other edge types, returns the original <paramref name="value"/>.</returns>
+        internal static float FixConnectionValue(float value, EdgeType valueType)
+            => valueType switch
+            {
+                EdgeType.Binary => value > 0 ? 1 : 0,
+                _ => value
+            };
+
+        internal static ILayer PackLayer(ILayer layer) => layer switch
+        {
+            LayerOneMode m => LayerOneModeStatic.FromDynamic(m),
+            LayerTwoMode m => LayerTwoModeStatic.FromDynamic(m),
+            _ => layer
+        };
+
+        internal static ILayer UnpackLayer(ILayer layer) => layer switch
+        {
+            LayerOneModeStatic m => LayerOneMode.FromStatic(m),
+            LayerTwoModeStatic m => LayerTwoMode.FromStatic(m),
+            _ => layer
+        };
+
+        /// <summary>
+        /// Converts/parses a 2d array of strings into a 2d array of floats with the provided top-left offset.
+        /// Used by file importers.
+        /// </summary>
+        /// <param name="cells">A 2d array of strings.</param>
+        /// <param name="startOffset">The top-left offset (use 1 to ignore the first row and column).</param>
+        /// <returns>Returns a 2d array of parsed float values.</returns>
+        internal static float[,] ConvertStringCellsToFloatCells(string[,] cells, int startOffset)
+        {
+            int nbrRows = cells.GetLength(0), nbrCols = cells.GetLength(1);
+            float[,] data = new float[nbrRows - startOffset, nbrCols - startOffset];
+            for (int r = 0; r < nbrRows - startOffset; r++)
+                for (int c = 0; c < nbrCols - startOffset; c++)
+                    float.TryParse(cells[r + startOffset, c + startOffset], out data[r, c]);
+            return data;
+        }
+
+        /// <summary>
+        /// Method for sampling very large numbers from the geometric distribution, by using the
+        /// inverse-CDF formula for a geometric random variable.
+        /// </summary>
+        /// <param name="p">The probability of success at each step.</param>
+        /// <returns></returns>
+        internal static ulong SampleGeometric(double p)
+        {
+            double u = Misc.Random.NextDouble();
+            if (u == 0.0)
+                u = double.Epsilon;
+            return (ulong)Math.Floor(Math.Log(u) / Math.Log(1.0 - p));
+        }
+
+        /// <summary>
+        /// Generates the cumulative distribution function for the discrete Poisson distribution for the specified
+        /// lambda and maxValue. Normalizes the probabilities so they sum up to 1.
+        /// Used with the function for sampling from a given CDF.
+        /// </summary>
+        /// <param name="lambda">The lambda value (i.e. expected value)</param>
+        /// <param name="maxValue">The max value that can be generated.</param>
+        /// <returns>A double[] array of probabilities.</returns>
+        internal static double[] BuildPoissonCDF(double lambda, int maxValue)
+        {
+            if (lambda < 0 || maxValue < 0)
+                return [];
+            double[] cdf = new double[maxValue + 1];
+            double pmf = Math.Exp(-lambda);
+            cdf[0] = pmf;
+            for (int k = 1; k <= maxValue; k++)
+            {
+                pmf = pmf * lambda / k;
+                cdf[k] = cdf[k - 1] + pmf;
+            }
+            double totalProb = cdf[maxValue];
+            for (int k = 0; k <= maxValue; k++)
+                cdf[k] /= totalProb;
+            return cdf;
+        }
+
+        /// <summary>
+        /// Sample from a precomputed cumulative distribution function (CDF).
+        /// Uses binary search for speed. Returns the discrete random variable.
+        /// </summary>
+        /// <param name="cdf">The Cumulative distribution function, i.e. array of cumulative probabilities</param>
+        /// <returns>Sampled integer value</returns>
+        internal static int SampleFromCDF(double[] cdf)
+        {
+            double u = Random.NextDouble();
+            int left = 0;
+            int right = cdf.Length - 1;
+            while (left < right)
+            {
+                int mid = left + (right - left) / 2;
+                if (u <= cdf[mid])
+                    right = mid;
+                else left = mid + 1;
+            }
+            return left;
+        }
+
+        /// <summary>
+        /// Partial Fisher-Yates for sampling k from an array: randomly reshuffling but only
+        /// the first k entries in an array. Returns false if something went wrong.
+        /// </summary>
+        /// <typeparam name="T">Type of value that the array is about</typeparam>
+        /// <param name="array">The array (by reference)</param>
+        /// <param name="k">Number to randomize (i.e. k first)</param>
+        /// <returns>True if successful, false if an error.</returns>
+        internal static bool SampleWithoutReplacementInPlace<T>(T[] array, int k)
+        {
+            if (k > array.Length)
+                return false;
+            for (int i = 0; i < k; i++)
+            {
+                int j = Random.Next(i, array.Length);
+                T temp = array[i];
+                array[i] = array[j];
+                array[j] = temp;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Convenience function for expressing an edge with or without directional connotations.
+        /// </summary>
+        /// <param name="directionality">Directionality of the edge specified by a <see cref="EdgeDirectionality"/> value.</param>
+        /// <param name="node1Id">The first node id.</param>
+        /// <param name="node2Id">The second node id.</param>
+        /// <returns>A string either expressing this as 'from [node1Id] to [node2Id]', or 'between [node1Id] and [node2Id]'.</returns>
+        internal static string BetweenFromToText(EdgeDirectionality directionality, uint node1Id, uint node2Id)
+        {
+            return directionality == EdgeDirectionality.Directed ? $"from {node1Id} to {node2Id}" : $"between {node1Id} and {node2Id}";
+        }
+
+        internal static string GetFileEnding(string filepath)
+        {
+            // Path.GetExtension always finds the LAST dot, so a filename with multiple dots
+            // before its real extension (e.g. "my.network.tsv") isn't misread as ending in
+            // "network.tsv". The one two-part exception is a '.gz'-compressed file, where the
+            // inner format (e.g. "tsv" from "layer.tsv.gz") also needs to be captured.
+            var filename = Path.GetFileName(filepath);
+            string ext = Path.GetExtension(filename);
+            if (ext.Length == 0)
+                return "";
+            string result = ext.Substring(1);
+            if (result.Equals("gz", StringComparison.Ordinal))
+            {
+                string withoutGz = filename.Substring(0, filename.Length - ext.Length);
+                string innerExt = Path.GetExtension(withoutGz);
+                if (innerExt.Length > 0)
+                    result = innerExt.Substring(1) + "." + result;
+            }
+            return result;
+        }
+
+        internal static FileFormat GetFileFormatFromFileEnding(string filepath)
+        {
+            return GetFileEnding(filepath) switch
+            {
+                "tsv" => FileFormat.Tsv,
+                "tsv.gz" => FileFormat.TsvGzip,
+                "bin" => FileFormat.Bin,
+                "bin.gz" => FileFormat.BinGzip,
+                _ => FileFormat.None
+            };
+        }
+
+        /// <summary>
+        /// Goes through a list and removes duplicates - also sorts it.
+        /// Sorts list, then iterates through, rewriting and skipping duplicates in order
+        /// </summary>
+        /// <param name="list">The list with uint to be sorted and deduplicated</param>
+        internal static void DeduplicateUintList(List<uint> list)
+        {
+            if (list.Count < 2)
+                return;
+            list.Sort();
+
+            int write = 1;
+            for (int read = 1; read < list.Count; read++)
+            {
+                uint v = list[read];
+                if (v != list[read - 1])
+                    list[write++] = v;
+            }
+
+            if (write < list.Count)
+                list.RemoveRange(write, list.Count - write);
+        }
+
+        /// <summary>
+        /// Deduplicates a list of Connection struct (on the basis of their partnerNodeId properties).
+        /// Also sorts it by partnerNodeId.
+        /// </summary>
+        /// <param name="list">The list with Connection structs to be sorted and deduplicated by partnerNodeId</param>
+        internal static void DeduplicateConnectionList(List<Connection> list)
+        {
+            if (list.Count < 2)
+                return;
+            list.Sort((a, b) => a.partnerNodeId.CompareTo(b.partnerNodeId));
+
+            int write = 1;
+            for (int read = 1; read < list.Count; read++)
+            {
+                uint v = list[read].partnerNodeId;
+                if (v != list[read - 1].partnerNodeId)
+                    list[write++] = list[read];
+            }
+            if (write < list.Count)
+                list.RemoveRange(write, list.Count - write);
+        }
+
+        /// <summary>
+        /// Takes a string and split it into a char[] array, using the optional separator
+        /// character provided (defaults to semicolon). Returns null if something went wrong.
+        /// </summary>
+        /// <param name="charstring">The string consisting of semicolon-separated single characters.</param>
+        /// <param name="sep">The separator character.</param>
+        /// <returns>Returns a char array or null if something went wrong.</returns>
+        internal static char[]? CharStringToChars(string charstring, char sep = ';')
+        {
+            if (string.IsNullOrWhiteSpace(charstring))
+                return null;
+            string[] parts = charstring.Split(sep);
+            List<char> chars = [];
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string trimmed = parts[i].Trim();
+                if (trimmed.Length != 1)
+                    return null;
+                chars.Add(trimmed[0]);
+            }
+            return chars.ToArray();
+        }
+
+        /// <summary>
+        /// Method to trim quotes from a string, returning the trimmed string. Removes a single
+        /// matching pair of wrapping quote characters (straight " or ', or a left/right curly
+        /// quote pair) - not every leading/trailing character that happens to be in the quote-char
+        /// set, which would otherwise also strip a value that legitimately starts or ends with an
+        /// apostrophe or curly quote (e.g. "'80s Club" or "James'").
+        /// </summary>
+        /// <param name="text"></param>
+        /// <returns></returns>
+        internal static string TrimQuotes(string text)
+        {
+            if (text.Length < 2)
+                return text;
+            char first = text[0];
+            char last = text[^1];
+            bool matchingPair = first == last && Array.IndexOf(_quoteChars, first) >= 0;
+            // Curly quotes are directional, so they pair left-with-right rather than by equality
+            // (indices into _quoteChars: 2/3 are the left/right double quotes, 4/5 left/right single).
+            bool curlyPair = (first == _quoteChars[2] && last == _quoteChars[3]) || (first == _quoteChars[4] && last == _quoteChars[5]);
+            return matchingPair || curlyPair ? text.Substring(1, text.Length - 2) : text;
+        }
+
+        internal static string FormatBytes(long bytes)
+        {
+            if (bytes >= 1L << 30)
+                return $"{bytes / (double)(1L << 30):F2} GB";
+            if (bytes >= 1L << 20)
+                return $"{bytes / (double)(1L << 20):F1} MB";
+            if (bytes >= 1L << 10)
+                return $"{bytes / (double)(1L << 10):F1} kB";
+            return $"{bytes} B";
+        }
+
+        /// <summary>
+        /// Converts 'value' to a bool, whether it already is one (returned as-is) or is a string that can
+        /// be parsed as one. Returns false (with result set to default) for any other case.
+        /// </summary>
+        /// <param name="value">The value to convert, either a bool or a string.</param>
+        /// <param name="result">The converted bool value, if successful.</param>
+        /// <returns>True if 'value' could be converted to a bool, false otherwise.</returns>
+        internal static bool TryConvertToBool(object value, out bool result)
+        {
+            switch (value)
+            {
+                case bool b:
+                    result = b;
+                    return true;
+                case string s when bool.TryParse(s, out bool parsed):
+                    result = parsed;
+                    return true;
+                default:
+                    result = default;
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Converts 'value' to an int, whether it already is one (returned as-is) or is a string that can
+        /// be parsed as one. Returns false (with result set to default) for any other case.
+        /// </summary>
+        /// <param name="value">The value to convert, either an int or a string.</param>
+        /// <param name="result">The converted int value, if successful.</param>
+        /// <returns>True if 'value' could be converted to an int, false otherwise.</returns>
+        internal static bool TryConvertToInt(object value, out int result)
+        {
+            switch (value)
+            {
+                case int i:
+                    result = i;
+                    return true;
+                case string s when int.TryParse(s, out int parsed):
+                    result = parsed;
+                    return true;
+                default:
+                    result = default;
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Converts a string of pairSep-separated node id pairs (each pair itself valueSep-separated,
+        /// e.g. "1:2;3:4;5:6") into a list of (uint,uint) tuples. Returns null if the string is malformed
+        /// (a pair doesn't have exactly two values, or a value isn't a valid uint).
+        /// Note: the default valueSep is a colon, not a comma, since commas are the CLI's top-level argument
+        /// separator (see TextCommandParser) — an unquoted value containing a comma would be split apart
+        /// before it ever reaches this method.
+        /// </summary>
+        /// <param name="pairsString">A string with pairSep-separated node id pairs.</param>
+        /// <param name="pairSep">The separator character between pairs (default is semicolon ;)</param>
+        /// <param name="valueSep">The separator character between the two values within a pair (default is colon :)</param>
+        /// <returns>A list of (uint,uint) tuples, or null if the string could not be parsed.</returns>
+        public static List<(uint, uint)>? ParseUintPairList(string pairsString, char pairSep = ';', char valueSep = ':')
+        {
+            var pairStrings = pairsString.Split(pairSep, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var result = new List<(uint, uint)>(pairStrings.Length);
+            foreach (string pairString in pairStrings)
+            {
+                var values = pairString.Split(valueSep, StringSplitOptions.TrimEntries);
+                if (values.Length != 2 || !uint.TryParse(values[0], out uint first) || !uint.TryParse(values[1], out uint second))
+                    return null;
+                result.Add((first, second));
+            }
+            return result;
+        }
+        #endregion
+    }
+}
