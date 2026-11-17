@@ -1,0 +1,42 @@
+﻿using Threadle.CLIconsole.Parsing;
+using Threadle.CLIconsole.Results;
+using Threadle.CLIconsole.Runtime;
+
+namespace Threadle.CLIconsole.Commands
+{
+    /// <summary>
+    /// Class for the 'help' command, routing to Dispatcher.
+    /// </summary>
+    public class HelpCommand : ICommand
+    {
+        /// <summary>
+        /// Gets the command syntax definition as shown in help and usage output.
+        /// </summary>
+        public string Syntax => "help(*[str], *file = [str])";
+
+        /// <summary>
+        /// Gets a human-readable description of what the command does.
+        /// </summary>
+        public string Description => "Provides information about all available CLI commands, or detailed information about a specific command if the first nameless argument is a command. If the named command 'file' is used and a filename is specified, this will instead save all help data (syntax, assignments, descriptions) to the specified file. Note that this will then only save in the current working directory: any path given in the file argument will be pruned away.";
+
+
+        /// <summary>
+        /// Gets a value indicating whether this command produces output that must be assigned to a variable.
+        /// </summary>
+        public bool ToAssign => false;
+
+        /// <summary>
+        /// Executes the command.
+        /// </summary>
+        /// <param name="command">The parsed <see cref="CommandPackage"/> to be executed.</param>
+        /// <param name="context">The <see cref="CommandContext"/> providing shared console variable memory.</param>
+        public CommandResult Execute(CommandPackage command, CommandContext context)
+        {
+            if (command.GetArgument("file") is string filepath)
+                return CommandDispatcher.DumpHelpToFile(filepath);
+            if (!(command.GetArgument("arg0") is string commandName))
+                return CommandDispatcher.GetHelpForAll();
+            return CommandDispatcher.GetHelpFor(commandName);
+        }
+    }
+}
