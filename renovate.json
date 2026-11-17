@@ -1,0 +1,14 @@
+{
+  "packageRules": [
+    {
+      "description": "typescript-eslint does not yet support TypeScript 7",
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
+      "description": "Next.js ESLint plugins do not yet support ESLint 10",
+      "matchPackageNames": ["eslint"],
+      "allowedVersions": "<10"
+    }
+  ]
+}
