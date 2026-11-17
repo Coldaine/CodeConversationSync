@@ -1,0 +1,42 @@
+# CodeRabbit configuration — see AGENTS.md "File ownership" and
+# docs/plans/2026-11-16-threadle-merge-enhancement-plan.md §7.3/§8.
+language: "en-US"
+tone_instructions: "Be terse and specific. Cite file and line. Skip praise."
+early_access: false
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches: ["main"]
+  path_instructions:
+    - path: "lib/types.ts"
+      instructions: >-
+        This file is the corpus schema (shared contract). Any change here REQUIRES
+        matching changes to lib/threadle-projection.ts and its tests in the same PR.
+        Request changes if they are missing.
+    - path: "lib/server/**"
+      instructions: >-
+        SER10-agent-owned Threadle sidecar/client code. Flag: trusting the threadle
+        process exit code (always 0; only JSON Success/Code counts), unserialized
+        concurrent writes to the sidecar, node attributes used for long text
+        (255-byte limit), and any edge metadata stored on Threadle edges (edges
+        carry only a float; metadata belongs in the data/ sidecar JSON).
+    - path: "lib/threadle-projection.ts"
+      instructions: >-
+        Corpus<->graph projection. Every entity kind in lib/types.ts must map to a
+        node kind and every relation to a named layer; arrays must become
+        edges/hyperedges, never node attributes. Round-trip test coverage required.
+    - path: "components/**"
+      instructions: "AI-Studio-owned UI. Review for correctness only; do not demand refactors."
+    - path: "app/api/**"
+      instructions: >-
+        Server routes. GEMINI_API_KEY and all secrets must come from the environment.
+        /api/threadle/* must degrade gracefully when the threadle binary is absent
+        (AI Studio preview has no .NET runtime).
+knowledge_base:
+  learnings:
+    scope: "auto"
+chat:
+  auto_reply: true

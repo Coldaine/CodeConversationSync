@@ -1,0 +1,54 @@
+﻿using Threadle.CLIconsole.Parsing;
+using Threadle.CLIconsole.Results;
+using Threadle.CLIconsole.Runtime;
+using Threadle.Core.Model;
+using Threadle.Core.Utilities;
+
+namespace Threadle.CLIconsole.Commands
+{
+    /// <summary>
+    /// Class representing the 'addhyper' CLI command.
+    /// </summary>
+    public class AddHyper : ICommand
+    {
+        /// <summary>
+        /// Gets the command syntax definition as shown in help and usage output.
+        /// </summary>
+        public string Syntax => "addhyper(network = [var:network], layername = [str], hypername = [str], *nodes = [semicolon-separated uints], *addmissingnodes = ['true'(default),'false'])";
+
+        /// <summary>
+        /// Gets a human-readable description of what the command does.
+        /// </summary>
+        public string Description => "Creates and adds a hyperedge (aka context or affiliation) called 'hypername' to layer 'layername' in the specified network. The layer must be 2-mode. This can then represent a particular school class or specific social event to which a set of nodes are affiliated. If there already is a hyperedge with the specified name, an error is returned: that must first be removed using 'removehyper()'. Can be provided with an optional list of nodes that are connected by this hyperedge. If the specified node id's do not exist in the Nodeset, they are by default created and added, but by setting 'addmissingnodes' to 'false' prevents this. Duplicate node id values are discarded.";
+
+        /// <summary>
+        /// Gets a value indicating whether this command produces output that must be assigned to a variable.
+        /// </summary>
+        public bool ToAssign => false;
+
+        /// <summary>
+        /// Executes the command.
+        /// </summary>
+        /// <param name="command">The parsed <see cref="CommandPackage"/> to be executed.</param>
+        /// <param name="context">The <see cref="CommandContext"/> providing shared console variable memory.</param>
+        public CommandResult Execute(CommandPackage command, CommandContext context)
+        {
+            if (CommandHelpers.TryGetVariable<Network>(context, command.GetArgumentThrowExceptionIfMissingOrNull("network", "arg0"), out var network) is CommandResult commandResult)
+                return commandResult;
+            string layerName = command.GetArgumentThrowExceptionIfMissingOrNull("layername", "arg1");
+            string hyperName = command.GetArgumentThrowExceptionIfMissingOrNull("hypername", "arg2");
+            if (!Misc.IsNameWithinBinaryLimit(hyperName))
+                return CommandResult.Fail("NameTooLong", $"The hyperedge name - '{hyperName}' - is too long; can max be 255 UTF8 bytes.");
+            if (command.GetArgument("nodes") is string nodesString)
+            {
+                uint[]? nodeIds = Misc.SplitStringToUintArray(nodesString);
+                if (nodeIds == null)
+                    return CommandResult.Fail("ParseError", "Could not parse semicolon-separated list with nodes.");
+                bool addMissingNodes = command.GetArgumentParseBool("addmissingnodes", true);
+                return CommandResult.FromOperationResult(network.AddHyperedge(layerName, hyperName, nodeIds, addMissingNodes));
+            }
+            else
+                return CommandResult.FromOperationResult(network.AddHyperedge(layerName, hyperName));
+        }
+    }
+}
