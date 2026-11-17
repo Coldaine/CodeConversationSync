@@ -282,15 +282,17 @@ Repo is public deliberately: free bot review. Order matters — **bots first, pr
 
 Triaged by the critique's strict test: a human decision must be (a) not inferable from code/requirements **and** (b) decidable well today.
 
-### 11.1 For the owner to weigh in on (short list)
+### 11.1 Owner decisions (recorded 2026-11-16)
 
-| # | Decision | Options / trade-off | Default if unanswered |
-|---|---|---|---|
-| H1 | Is AI Studio still the UI editor in 6 months? | Keep: ownership matrix + `studio` branch + per-file conflict dialog are a permanent two-editor tax. Drop: agents own `components/`, all of §7's gymnastics vanish | Keep, but **freeze Studio edits to `components/` during Phases 1–3** while the API contract forms |
-| H2 | Who can reach the app on SER10, and who may write? | Loopback-only (no auth needed) vs LAN (needs auth) vs public (auth+TLS). Corpus = transcripts of all coding sessions, incl. code; the plan has no auth anywhere else | Bind `127.0.0.1`, SSH-tunnel access, no write API beyond loopback |
-| H3 | Repo home: `Coldaine` (personal) or `MooseGooseConsulting` (org)? | Not cosmetic: the SER10 runner is registered to the org; this repo (personal) has zero runners. Stay personal ⇒ GitHub-hosted CI only; move ⇒ runner reuse but org overhead | Stay personal, GitHub-hosted CI only, SER10 runner out of scope |
-| H4 | Threadle naming: heads-up to Carl Nordlund now, rename later, or internal-only indefinitely? | Relationship cost vs surprise later; MIT covers code, not the name | One-paragraph heads-up now; keep the name; publish nothing under it |
-| H5 | Transcript data-at-rest policy (bites at Phase 4) | Plaintext on `/ser10-data` vs encrypted vs per-project/client exclusion list. Collectors will read agent histories that may contain client code | Plaintext + documented exclusion list + no transcripts in git (already in AGENTS.md); revisit before collecting any non-owner data |
+| # | Decision | Recorded |
+|---|---|---|
+| H1 | AI Studio as UI editor? | **Keep, no freeze.** Owner coordinates both editors personally; the "two-editor conflict risk" is not accepted as a real risk. §7.3 ownership stays as a *which-tool-for-which-file* convention, not a conflict-avoidance regime. |
+| H2 | Reachability on SER10? | **Loopback only** (`127.0.0.1` + SSH tunnel). No auth work while this holds. |
+| H3 | Repo home? | **Stays `Coldaine` personal + public.** Owner's reason is correct: AI Studio's GitHub sync effectively only sees personal-account repos (org accounts hit a known Studio bug — AI Developers Forum #114556), so an org move would break the Studio link. GitHub-hosted CI only; SER10 runner (org-registered) out of scope permanently unless this is revisited. |
+| H4 | "Threadle" name? | **Do not call this product Threadle.** It gets a new name (owner to choose; working/repo name `CodeConversationSync` until then). In all new docs, "Threadle" means *only* the upstream engine. Existing mockup files named `ThreadleApp`/`ThreadleCorpus` are legacy mockup naming, renamed when the product name lands. No contact with upstream author now — internal/self-facing only; revisit if it ever becomes more. |
+| H5 | Transcript data at rest? | **Encrypted at rest, required.** Verified facts: Threadle provides **no database and no encryption** (see §1 note below), and SER10's `/ser10-data` is **plain ext4 (no LUKS)**. `gocryptfs` is already installed on SER10. Mechanism: corpus data dir (`data/`: .bin files, sidecar JSON, transcripts) lives in a gocryptfs-encrypted directory mounted only while the app runs — no app-level crypto, no changes to Threadle. Final mount/unmount + key handling is a Phase 3 deliverable; exclusion list per project still applies. |
+
+> **Storage reality check (added v2):** Threadle has *no database at all* — no SQLite/SQL anywhere in `Threadle.Core` (verified: zero matches). It is an in-memory graph with its own file serializers (`FileSerializerBin` magic `TNTW`/`TNDS`, TSV variants). "Persistence" in this plan always means those files + our JSON sidecar, never a DB. If a queryable DB is ever wanted (full-text transcript search, multi-writer), that is a new component next to Threadle, not something Threadle grows.
 
 ### 11.2 Agent decides (inferable — do not escalate)
 
