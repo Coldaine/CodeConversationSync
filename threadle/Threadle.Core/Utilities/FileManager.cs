@@ -1,0 +1,790 @@
+﻿using Threadle.Core.Model;
+using Threadle.Core.Model.Enums;
+using Threadle.Core.Processing;
+using Threadle.Core.Utilities.Enums;
+
+namespace Threadle.Core.Utilities
+{
+    /// <summary>
+    /// Public-facing class for loading and saving data in Threadle.
+    /// </summary>
+    public static class FileManager
+    {
+
+        #region Methods (public)
+        /// <summary>
+        /// Public-facing method for loading a data structure from filepath. Returns an OperationResult that holds
+        /// a StructureResult, which in turn can hold one or more IStructure objects.
+        /// Catches all exceptions, converts to OperationResults.
+        /// Note that filepath import methods use internal methods that bypass validation for performance.
+        /// </summary>
+        /// <param name="filepath">The filepath to the filepath to load.</param>
+        /// <param name="structureTypeString">The type of structure to load ('network' or 'nodeset')</param>
+        /// <param name="format">The filepath format (currently only TsvGzip by default)</param>
+        /// <returns>Returns an OperationResult with a StructureResult object holding the loaded structures.</returns>
+        public static OperationResult<StructureResult> Load(string filepath, string structureTypeString, bool packLayers = false)
+        {
+            try
+            {
+                return structureTypeString.ToLower() switch
+                {
+                    "nodeset" => LoadNodeset(filepath),
+                    "network" => LoadNetwork(filepath, packLayers),
+                    _ => OperationResult<StructureResult>.Fail("IOLoadError", $"Load not implemented for type '{structureTypeString}'.")
+                };
+            }
+            catch (Exception e)
+            {
+                return OperationResult<StructureResult>.Fail("IOLoadError", $"Unexpected error while loading: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Public-facing method for saving a data structure to filepath. Returns an OperationResult object to inform how it went.
+        /// If saving a network object, an optional nodesetFilepath argument can be provided where the nodeset should be saved.
+        /// The method selects subsequent filepath writing function based on what kind of IStructure it is.
+        /// </summary>
+        /// <param name="structure">The structure to save</param>
+        /// <param name="filepath">The filepath to save to.</param>
+        /// <param name="format">The filepath format (currently only TsvGzip by default)</param>
+        /// <param name="nodesetFilepath">The optional filepath where to save the nodeset (if saving a network)</param>
+        /// <returns>Returns an OperationResult informing how well it went.</returns>
+        public static OperationResult Save(IStructure structure, string filepath)
+        {
+            try
+            {
+                if (filepath is null || filepath.Length == 0)
+                    return OperationResult.Fail("MissingFilepath", $"No filepath for structure '{structure.Name}' provided.");
+
+                filepath = Path.GetFullPath(filepath);
+
+                return structure switch
+                {
+                    Nodeset nodeset => SaveNodeset(nodeset, filepath),
+                    Network network => SaveNetwork(network, filepath),
+                    _ => OperationResult.Fail("UnsupportedStructureType", $"Save not implemented for type '{structure.GetType().Name}'.")
+                };
+            }
+            catch (Exception e)
+            {
+                return OperationResult.Fail("IOSaveError", $"Unexpected error while saving: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Public-facing method for importing an edgelist from filepath to a 1-mode layer.
+        /// </summary>
+        /// <param name="filepath">The filepath to the filepath to import.</param>
+        /// <param name="network">The Network object to import the data to.</param>
+        /// <param name="layer">The <see cref="LayerOneMode"/> to install the data to.</param>
+        /// <param name="node1col">The column index where the first node ids are.</param>
+        /// <param name="node2col">The column index where the second node ids are.</param>
+        /// <param name="valueCol">The column index where edge values are (for layers with valued edges).</param>
+        /// <param name="hasHeader">Boolean to indicate whether the first line has headers (that should be ignored).</param>
+        /// <param name="separator">The value-separating character/string used in the data filepath.</param>
+        /// <param name="addMissingNodes">A boolean indicating whether newly discovered node id's should be added to the Nodeset of the network or not.</param>
+        /// <param name="labelAttr">Optional name of a string node attribute holding node labels. If provided, node identifiers in the file are
+        /// treated as string labels that are matched against this attribute, with new nodes getting new node ids and their labels stored in this attribute.</param>
+        /// <param name="filterCol">Optional column index to filter lines on: if non-negative, only lines where this column equals <paramref name="filterValue"/> are imported.</param>
+        /// <param name="filterValue">The value that the filter column must have for a line to be imported.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        public static OperationResult ImportOneModeEdgeList(string filepath, Network network, LayerOneMode layer, int node1col, int node2col, int valueCol, bool hasHeader, char separator, bool addMissingNodes, string? labelAttr = null, int filterCol = -1, string? filterValue = null)
+        {
+            try
+            {
+                var resolver = NodeIdResolver.Create(network.Nodeset, labelAttr, addMissingNodes);
+                LayerImportExport.ImportOneModeEdgelist(filepath, network, layer, node1col, node2col, valueCol, hasHeader, separator, resolver, filterCol, filterValue);
+                return OperationResult.Ok($"Imported edgelist to 1-mode layer '{layer.Name}'" + NodesAddedMessage(resolver));
+
+            }
+            catch (Exception ex)
+            {
+                return OperationResult.Fail("IOImportError", "Unexpected error when importing edgelist to 1-mode layer: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Public-facing method for importing a matrix from filepath to a 1-mode layer.
+        /// </summary>
+        /// <param name="filepath">The filepath to the filepath to import.</param>
+        /// <param name="network">The Network object to import the data to.</param>
+        /// <param name="layer">The <see cref="LayerOneMode"/> to install the data to.</param>
+        /// <param name="separator">The value-separating character/string used in the data filepath.</param>
+        /// <param name="addMissingNodes">A boolean indicating whether newly discovered node id's should be added to the Nodeset of the network or not.</param>
+        /// <param name="labelAttr">Optional name of a string node attribute holding node labels. If provided, node identifiers in the file are
+        /// treated as string labels that are matched against this attribute, with new nodes getting new node ids and their labels stored in this attribute.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        public static OperationResult ImportOneModeMatrix(string filepath, Network network, LayerOneMode layer, char separator, bool addMissingNodes, string? labelAttr = null)
+        {
+            try
+            {
+                var resolver = NodeIdResolver.Create(network.Nodeset, labelAttr, addMissingNodes);
+                LayerImportExport.ImportOneModeMatrix(filepath, network, layer, separator, resolver);
+                return OperationResult.Ok($"Imported matrix to 1-mode layer '{layer.Name}'" + NodesAddedMessage(resolver));
+            }
+            catch (Exception ex)
+            {
+                return OperationResult.Fail("IOImportError", "Unexpected error when importing matrix to 1-mode layer: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Public-facing method for importing an edgelist to a 2-mode layer.
+        /// Whereas unknown nodes would be included or excluded, unknown affiliation/hyperedges are always added.
+        /// </summary>
+        /// <param name="filepath">The filepath to the filepath to import.</param>
+        /// <param name="network">The Network object to import the data to.</param>
+        /// <param name="layer">The <see cref="LayerTwoMode"/> to install the data to.</param>
+        /// <param name="nodeCol">The column index where the node ids are.</param>
+        /// <param name="affCol">The column index where the affiliation (hyerpedge) name is.</param>
+        /// <param name="hasHeader">Boolean to indicate whether the first line has headers (that should be ignored).</param>
+        /// <param name="separator">The value-separating character/string used in the data filepath.</param>
+        /// <param name="addMissingNodes">A boolean indicating whether newly discovered node id's should be added to the Nodeset of the network or not.</param>
+        /// <param name="labelAttr">Optional name of a string node attribute holding node labels. If provided, node identifiers in the file are
+        /// treated as string labels that are matched against this attribute, with new nodes getting new node ids and their labels stored in this attribute.</param>
+        /// <param name="filterCol">Optional column index to filter lines on: if non-negative, only lines where this column equals <paramref name="filterValue"/> are imported.</param>
+        /// <param name="filterValue">The value that the filter column must have for a line to be imported.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        public static OperationResult ImportTwoModeEdgeList(string filepath, Network network, LayerTwoMode layer, int nodeCol, int affCol, bool hasHeader, char separator, bool addMissingNodes, string? labelAttr = null, int filterCol = -1, string? filterValue = null)
+        {
+            try
+            {
+                var resolver = NodeIdResolver.Create(network.Nodeset, labelAttr, addMissingNodes);
+                LayerImportExport.ImportTwoModeEdgelist(filepath, network, layer, nodeCol, affCol, separator, hasHeader, resolver, filterCol, filterValue);
+                return OperationResult.Ok($"Imported edgelist to 2-mode layer '{layer.Name}'" + NodesAddedMessage(resolver));
+            }
+            catch (Exception ex)
+            {
+                return OperationResult.Fail("IOImportError", "Unexpected error when importing edgelist to 2-mode layer: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Public-facing method for importing a matrix/table to a 2-mode layer.
+        /// The first column must contain node ids, the first row must contain affiliation/hyperedge names.
+        /// Whereas unknown nodes would be included or excluded, unknown affiliation/hyperedges are always added.
+        /// </summary>
+        /// <param name="filepath">The filepath to the filepath to import.</param>
+        /// <param name="network">The Network object to import the data to.</param>
+        /// <param name="layer">The <see cref="LayerTwoMode"/> to install the data to.</param>
+        /// <param name="separator">The value-separating character/string used in the data filepath.</param>
+        /// <param name="addMissingNodes">A boolean indicating whether newly discovered node id's should be added to the Nodeset of the network or not.</param>
+        /// <param name="labelAttr">Optional name of a string node attribute holding node labels. If provided, node identifiers in the file are
+        /// treated as string labels that are matched against this attribute, with new nodes getting new node ids and their labels stored in this attribute.</param>
+        /// <returns>An OperationResult informing how well it went.</param>
+        public static OperationResult ImportTwoModeMatrix(string filepath, Network network, LayerTwoMode layer, char separator, bool addMissingNodes, string? labelAttr = null)
+        {
+            try
+            {
+                var resolver = NodeIdResolver.Create(network.Nodeset, labelAttr, addMissingNodes);
+                LayerImportExport.ImportTwoModeMatrix(filepath, network, layer, separator, resolver);
+                return OperationResult.Ok($"Imported matrix/table to 2-mode layer '{layer.Name}'" + NodesAddedMessage(resolver));
+            }
+            catch (Exception ex)
+            {
+                return OperationResult.Fail("IOImportError", "Unexpected error when importing matrix/table to 2-mode layer: " + ex.Message);
+            }
+        }
+
+        public static OperationResult ImportNodeAttributes(string filepath, Nodeset nodeset, bool addMissingNodes = false, char separator = '\t')
+        {
+            try
+            {
+                string[] lines = TextFileReader.LoadFile(filepath);
+                var parseResult = ParseNodeAttributeLines(lines, separator);
+                if (!parseResult.Success)
+                    return OperationResult.Fail(parseResult.Code, parseResult.Message);
+                return NodesetProcessor.ImportNodeAttributes(nodeset, parseResult.Value!, addMissingNodes);
+            }
+            catch (Exception ex)
+            {
+                return OperationResult.Fail("IOImportError", $"Unexpected error when importing node attributes: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Public-facing method for exporting a layer to an edgelist. Checks whether the layer is 1-mode or 2-mode
+        /// and passes control along to the suitable method.
+        /// </summary>
+        /// <param name="layer">The ILayer to export.</param>
+        /// <param name="filepath">The filepath to export to.</param>
+        /// <param name="separator">The column-separating character to use in the edgelist.</param>
+        /// <param name="header">Boolean whether the first row should contain column headers.</param>
+        /// <param name="nodeset">The Nodeset to resolve 'labelAttr' against (required if 'labelAttr' is given).</param>
+        /// <param name="labelAttr">Optional node attribute name whose value is written instead of the numeric node id.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        public static OperationResult ExportLayerEdgelist(ILayer layer, string filepath, char separator, bool header, Nodeset? nodeset = null, string? labelAttr = null)
+        {
+            try
+            {
+                if (!TryBuildLabelLookup(nodeset, labelAttr, out var idToLabel, out var error))
+                    return error!;
+                if (layer is ILayerOneMode layerOneMode)
+                    LayerImportExport.ExportOneModeEdgeList(layerOneMode, filepath, separator, header, idToLabel, nodeset);
+                else if (layer is ILayerTwoMode layerTwoMode)
+                    LayerImportExport.ExportTwoModeEdgeList(layerTwoMode, filepath, separator, header, idToLabel);
+                else
+                    return OperationResult.Fail("IOExportError", $"Did not recognize layer type of layer '{layer.Name}'.");
+                return OperationResult.Ok($"Exported layer '{layer.Name}' to filepath: {filepath}");
+            }
+            catch (Exception ex)
+            {
+                return OperationResult.Fail("IOExportError", "Unexpected error when exporting layer to edgelist: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Public-facing method for exporting a layer to a matrix. Checks whether the layer is 1-mode or 2-mode
+        /// and passes control along to the suitable method. Note that a 2-mode exported to a 'matrix' might be
+        /// rectangular.
+        /// </summary>
+        /// <param name="layer">The ILayer to export.</param>
+        /// <param name="filepath">The filepath to export to.</param>
+        /// <param name="separator">The column-separating character to use in the matrix.</param>
+        /// <param name="header">Boolean whether the first row should contain column headers.</param>
+        /// <param name="nodeset">The Nodeset to resolve 'labelAttr' against (required if 'labelAttr' is given).</param>
+        /// <param name="labelAttr">Optional node attribute name whose value is written instead of the numeric node id.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        public static OperationResult ExportLayerMatrix(ILayer layer, string filepath, char separator, bool header, Nodeset? nodeset = null, string? labelAttr = null)
+        {
+            try
+            {
+                if (!TryBuildLabelLookup(nodeset, labelAttr, out var idToLabel, out var error))
+                    return error!;
+                if (layer is ILayerOneMode layerOneMode)
+                    LayerImportExport.ExportOneModeMatrix(layerOneMode, filepath, separator, header, idToLabel, nodeset);
+                else if (layer is ILayerTwoMode layerTwoMode)
+                    LayerImportExport.ExportTwoModeMatrix(layerTwoMode, filepath, separator, header, idToLabel);
+                else
+                    return OperationResult.Fail("IOExportError", $"Did not recognize layer type of layer '{layer.Name}'.");
+                return OperationResult.Ok($"Exported layer '{layer.Name}' to filepath: {filepath}");
+            }
+            catch (Exception ex)
+            {
+                return OperationResult.Fail("IOExportError", "Unexpected error when exporting layer to matrix: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Builds a node-id-to-string formatter for layer exports. With no 'labelAttr', every node is formatted
+        /// as its plain numeric id. With 'labelAttr', each node is formatted using its value for that node
+        /// attribute (of any type — not necessarily string), converted to its display string; a node with no
+        /// value for the attribute falls back to its numeric id individually. Neither a string type nor unique
+        /// values are required or checked for 'labelAttr' — if several nodes share a value, or lack one, that
+        /// is reflected as-is in the exported file.
+        /// </summary>
+        /// <param name="nodeset">The Nodeset to resolve 'labelAttr' against (ignored if 'labelAttr' is null/empty).</param>
+        /// <param name="labelAttr">Optional node attribute name whose value is written instead of the numeric node id.</param>
+        /// <param name="idToLabel">The resulting formatter.</param>
+        /// <param name="error">Set if 'labelAttr' was given but doesn't name an existing node attribute.</param>
+        /// <returns>True on success; false (with 'error' set) if 'labelAttr' names an attribute that doesn't exist.</returns>
+        private static bool TryBuildLabelLookup(Nodeset? nodeset, string? labelAttr, out Func<uint, string> idToLabel, out OperationResult? error)
+        {
+            error = null;
+            static string NumericLabel(uint id) => id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+            if (nodeset == null || string.IsNullOrEmpty(labelAttr))
+            {
+                idToLabel = NumericLabel;
+                return true;
+            }
+
+            var definition = nodeset.NodeAttributeDefinitionManager.GetNodeAttributeDefinition(labelAttr);
+            if (definition is null)
+            {
+                idToLabel = NumericLabel;
+                error = OperationResult.Fail("LabelAttributeNotFound", $"!Error: Label attribute '{labelAttr}' not found.");
+                return false;
+            }
+
+            byte attrIndex = definition.Value.Index;
+            NodeAttributeType attrType = definition.Value.AttrType;
+            idToLabel = id => nodeset.GetNodeAttribute(id, attrIndex) is NodeAttributeValue value
+                ? (attrType == NodeAttributeType.String ? nodeset.GetStringFromPool(value.RawValueAsInt()) : value.ToString(attrType))
+                : NumericLabel(id);
+            return true;
+        }
+
+        /// <summary>
+        /// Public-facing method for exporting a network to file in an external format: 'gexf' (Gephi) or 'graphml'.
+        /// For single-layer formats (gexf), the layer must be specified. For multilayer formats (graphml), an empty
+        /// layer name exports all layers.
+        /// </summary>
+        /// <param name="network">The network structure to export.</param>
+        /// <param name="format">The format to export to.</param>
+        /// <param name="layerName">The layer to export</param>
+        /// <param name="filepath">Tjhe filepath to export to</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        public static OperationResult ExportNetworkToFile(Network network, ExportFormat format, string layerName, string filepath)
+        {
+            try
+            {
+                if (filepath is null || filepath.Length == 0)
+                    return OperationResult.Fail("MissingFilePath", $"No filepath for exporting network '{network.Name}' provided.");
+                filepath = Path.GetFullPath(filepath);
+
+                switch (format)
+                {
+                    // Probably better to convert the stuff in each case into a helper method here in FileManager,
+                    // so that this looks similar to the other public-facing API:s for load/save
+                    case ExportFormat.Gexf:
+                        return ExportNetworkToGexf(network, layerName, filepath);
+                    case ExportFormat.Graphml:
+                        return ExportNetworkToGraphml(network, layerName, filepath);
+                    case ExportFormat.Pajek:
+                        return ExportNetworkToPajek(network, filepath);
+                }
+                return OperationResult.Fail("ExportFormatNotFound", $"Export format '{format}' not implemented.");
+            }
+            catch (Exception ex)
+            {
+                return OperationResult.Fail("IOExportError", "Unexpected error when exporting network to filepath: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Public-facing method for importing a network from a file in an external format. Creates a new Network
+        /// and a new Nodeset, returned in a <see cref="StructureResult"/> (where the Nodeset is an additional structure).
+        /// </summary>
+        /// <param name="filepath">The file to import.</param>
+        /// <param name="format">The format of the file.</param>
+        /// <param name="layerAttr">Name of the edge attribute whose values specify the layer of each edge (null or empty: all edges in one layer).</param>
+        /// <param name="weightAttr">Name of the edge attribute holding edge values (null or empty: binary edges).</param>
+        /// <param name="idAttr">Name of the string node attribute to store the original node ids in, if these are not unsigned integers.</param>
+        /// <param name="labelAttr">Pajek only: name of the string node attribute to store each vertex's label in (null or empty: labels are discarded).</param>
+        /// <param name="packLayers">Whether layers should be packed after import.</param>
+        /// <returns>An OperationResult with a StructureResult holding the imported structures.</returns>
+        public static OperationResult<StructureResult> ImportNetwork(string filepath, ImportFormat format, string? layerAttr = "layer", string? weightAttr = "weight", string idAttr = "id", string? labelAttr = "label", bool packLayers = false)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(filepath))
+                    return OperationResult<StructureResult>.Fail("MissingFilePath", "No filepath provided.");
+                filepath = Path.GetFullPath(filepath);
+                StructureResult structureResult = format switch
+                {
+                    ImportFormat.Graphml => FileSerializerGraphml.Import(filepath, layerAttr, weightAttr, idAttr),
+                    ImportFormat.Pajek => FileSerializerPajek.Import(filepath, labelAttr),
+                    _ => throw new NotSupportedException($"Import format '{format}' not implemented.")
+                };
+                if (packLayers && structureResult.MainStructure is Network network)
+                    network.Pack(null);
+                return OperationResult<StructureResult>.Ok(structureResult);
+            }
+            catch (Exception e)
+            {
+                return OperationResult<StructureResult>.Fail("IOImportError", $"Error while importing network: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Exports a network (or one of its layers) to GraphML format. If no layer name is given, all layers are exported.
+        /// </summary>
+        /// <param name="network">The network to export.</param>
+        /// <param name="layerName">The layer to export (empty: all layers).</param>
+        /// <param name="filepath">The filepath to export to.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        private static OperationResult ExportNetworkToGraphml(Network network, string layerName, string filepath)
+        {
+            if (!string.IsNullOrEmpty(layerName) && network._getLayer(layerName) is null)
+                return OperationResult.Fail("LayerNotFound", $"No layer named '{layerName}' found.");
+            FileSerializerGraphml.Export(network, layerName, filepath);
+            string what = string.IsNullOrEmpty(layerName) ? $"Network '{network.Name}'" : $"Layer '{layerName}' in network '{network.Name}'";
+            return OperationResult.Ok($"{what} exported to 'graphml' format to file: {filepath}");
+        }
+
+        /// <summary>
+        /// Public-facing method to export a single-layer network to gexf (Gephi) format. As this format is single-layer,
+        /// the specific layer must be specified.
+        /// </summary>
+        /// <param name="network">The network to export to gexf</param>
+        /// <param name="layerName">The layer to use.</param>
+        /// <param name="filepath">The filepath to export to.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        private static OperationResult ExportNetworkToGexf(Network network, string layerName, string filepath)
+        {
+            if (!(network._getLayer(layerName) is ILayer layer))
+                return OperationResult.Fail("LayerNotFound", $"No layer named '{layerName}' found.");
+            if (!(layer is ILayerOneMode layerOneMode))
+                return OperationResult.Fail("LayerNotOneMode", $"Layer '{layerName}' is not 1-mode.");
+            FileSerializerGexf.Export(network, layerOneMode, filepath);
+            return OperationResult.Ok($"Layer '{layerName}' in network '{network.Name}' exported to 'gexf' format to file: {filepath}");
+        }
+
+        /// <summary>
+        /// Public-facing method to export a network to Pajek .net format. Always exports the whole network — the
+        /// format has no concept of a single-layer subset. 2-mode layers are skipped, since Pajek .net has no
+        /// hyperedge concept; this is reported in the result message when it happens.
+        /// </summary>
+        /// <param name="network">The network to export to Pajek .net.</param>
+        /// <param name="filepath">The filepath to export to.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        private static OperationResult ExportNetworkToPajek(Network network, string filepath)
+        {
+            int skippedTwoMode = network.Layers.Values.OfType<ILayerTwoMode>().Count();
+            FileSerializerPajek.Export(network, filepath);
+            string note = skippedTwoMode > 0 ? $" ({skippedTwoMode} two-mode layer(s) skipped: Pajek .net has no hyperedge support)" : "";
+            return OperationResult.Ok($"Network '{network.Name}' exported to 'pajek' format to file: {filepath}{note}");
+        }
+
+
+
+        /// <summary>
+        /// Sets the current working directory as safe as possible.
+        /// </summary>
+        /// <param name="path">The path to the new working directory.</param>
+        /// <param name="baseDirectory">An optional argument specifying the parent folder within which the new working directory must be within.</param>
+        /// <returns>Returns an OperationResult informing how well it went.</returns>
+        public static OperationResult SafeSetCurrentDirectory(string path, string? baseDirectory = null)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    return OperationResult.Fail("MissingFilepath", "Path cannot be null or whitespace.");
+                string fullPath = baseDirectory == null ? Path.GetFullPath(path) : Path.GetFullPath(path, baseDirectory);
+                if (baseDirectory != null)
+                {
+                    string fullBase = Path.GetFullPath(baseDirectory);
+                    string fullBaseWithSep = fullBase.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    bool isWithinBase = fullPath.Equals(fullBase, StringComparison.Ordinal) || fullPath.StartsWith(fullBaseWithSep, StringComparison.Ordinal);
+                    if (!isWithinBase)
+                        return OperationResult.Fail("UnauthorizedFilepath", $"Path '{fullPath}' is outside the allowed base directory '{fullBase}'.");
+                }
+                if (!Directory.Exists(fullPath))
+                    return OperationResult.Fail("FileNotFound", $"Directory does not exist: '{fullPath}'.");
+                Directory.SetCurrentDirectory(fullPath);
+                return OperationResult.Ok($"Set current working directory to '{fullPath}'.");
+
+            }
+            catch (Exception e)
+            {
+                return OperationResult.Fail("IOSetDirectoryError", $"Unexpected error while setting working directory: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Gets the current working directory, wrapped as a string in an OperationResult object.
+        /// </summary>
+        /// <returns>Returns an OperationResult informing how well this went.</returns>
+        public static OperationResult<string> GetCurrentDirectory()
+        {
+            try
+            {
+                string currDir = Directory.GetCurrentDirectory();
+                return OperationResult<string>.Ok(currDir);
+            }
+            catch (Exception e)
+            {
+                return OperationResult<string>.Fail("IOError", $"An unexpected error when getting current directory: {e.Message}.");
+            }
+        }
+
+        /// <summary>
+        /// Gets the content (directories and files) of the current working directory, wrapped as a potentially nested 
+        /// string-object dictionary. Note that more information can be obtained: I have commented out that info below.
+        /// </summary>
+        /// <param name="path">Optional filepath: if null, the current working will be used.</param>
+        /// <returns>Returns a string-object dictionary with info about the directories and files.</returns>
+        public static OperationResult<Dictionary<string, object>> GetDirectoryListing(string? path = null)
+        {
+            try
+            {
+                string targetPath = string.IsNullOrEmpty(path) ? Directory.GetCurrentDirectory() : path;
+                if (!Directory.Exists(targetPath))
+                    return OperationResult<Dictionary<string, object>>.Fail("DirectoryNotFound", $"Directory not found: {targetPath}");
+                var directories = Directory.GetDirectories(targetPath)
+                    .Select(d => new DirectoryInfo(d))
+                    .OrderBy(d => d.Name)
+                    .Select(d => new Dictionary<string, object>
+                    {
+                        ["Name"] = d.Name
+                    }
+                    )
+                    .ToList();
+                var files = Directory.GetFiles(targetPath)
+                    .Select(f => new FileInfo(f))
+                    .OrderBy(f => f.Name)
+                    .Select(f => new Dictionary<string, object>
+                    {
+                        ["Name"] = f.Name
+                    }
+                    )
+                    .ToList();
+
+                var result = new Dictionary<string, object>
+                {
+                    ["Path"] = targetPath,
+                    ["Directories"] = directories,
+                    ["Files"] = files,
+                    ["TotalDirectories"] = directories.Count,
+                    ["TotalFiles"] = files.Count
+                };
+                return OperationResult<Dictionary<string, object>>.Ok(result, $"Listed {directories.Count} directories and {files.Count} files.");
+            }
+            catch (UnauthorizedAccessException uaex)
+            {
+                return OperationResult<Dictionary<string, object>>.Fail("AccessDenied", "Access denied to directory: " + uaex.Message);
+            }
+            catch (Exception ex)
+            {
+                return OperationResult<Dictionary<string, object>>.Fail("DirectoryError", $"Error listing directory: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Loads a text filepath and returns it as a string[] array in an OperationResult.
+        /// </summary>
+        /// <param name="filepath">The filepath to the text filepath to read.</param>
+        /// <returns>An OperationResult, with a string[] array if all went well.</returns>
+        public static OperationResult<string[]> LoadTextfile(string filepath)
+        {
+            try
+            {
+                var lines = TextFileReader.LoadFile(filepath);
+                return OperationResult<string[]>.Ok(lines, $"Loaded {lines.Length} lines from filepath '{filepath}'.");
+            }
+            catch (Exception e)
+            {
+                return OperationResult<string[]>.Fail("IOLoadError", $"Unexpected error while loading: {e.Message}");
+            }
+        }
+        #endregion
+
+
+        #region Methods (private)
+        /// <summary>
+        /// Creates a message suffix informing how many nodes were added to the Nodeset during an import.
+        /// </summary>
+        /// <param name="resolver">The <see cref="NodeIdResolver"/> used during the import.</param>
+        /// <returns>The message suffix (empty if no nodes were added).</returns>
+        private static string NodesAddedMessage(NodeIdResolver resolver)
+        {
+            return resolver.NbrNodesAdded > 0 ? $" ({resolver.NbrNodesAdded} new nodes added to nodeset)" : "";
+        }
+
+        /// <summary>
+        /// Internal method to save a Nodeset to filepath.
+        /// The filepath format is derived from the filepath ending.
+        /// </summary>
+        /// <param name="nodeset">The Nodeset to save.</param>
+        /// <param name="filepath">The filepath to save to.</param>
+        /// <returns>Returns an OperationResult informing how well it went.</returns>
+        private static OperationResult SaveNodeset(Nodeset nodeset, string filepath)
+        {
+            try
+            {
+                FileFormat format = Misc.GetFileFormatFromFileEnding(filepath);
+                if (format == FileFormat.None)
+                    return OperationResult.Fail("UnsupportedFileFormat", $"Save format not supported.");
+
+                switch (format)
+                {
+                    case FileFormat.Tsv:
+                    case FileFormat.TsvGzip:
+                        FileSerializerTsv.SaveNodesetToFile(nodeset, filepath, format);
+                        return OperationResult.Ok($"Saved nodeset '{nodeset.Name}' to filepath: {filepath}");
+                    case FileFormat.Bin:
+                    case FileFormat.BinGzip:
+                        FileSerializerBin.SaveNodesetToFile(nodeset, filepath, format);
+                        return OperationResult.Ok($"Saved nodeset '{nodeset.Name}' to filepath: {filepath}");
+                    default:
+                        return OperationResult.Fail("UnsupportedFileFormat", $"Save format '{format}' not supported.");
+                }
+            }
+            catch (Exception e)
+            {
+                return OperationResult.Fail("IOError", $"Unexpected error while saving nodeset: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Internal method to save a Network structure to filepath. If the Nodeset that the Network refers to is not yet saved,
+        /// the operation is aborted, informing that the Nodeset must be saved first. If the Nodeset has been modified since
+        /// last save, this method also saves the Nodeset.
+        /// Note that the filepath format is derived from the filepath ending.
+        /// </summary>
+        /// <param name="network">The Network to save.</param>
+        /// <param name="filepath">The filepath to save to.</param>
+        /// <returns>An OperationResult informing how it went.</returns>
+        private static OperationResult SaveNetwork(Network network, string filepath)
+        {
+            try
+            {
+                // Get ref to the Nodeset that this Network is referring to.
+                Nodeset nodeset = network.Nodeset;
+
+                // Imperative that this Nodeset is first stored on filepath (separately, so that it has a Filepath property).
+                // If not: throw back a Fail
+                if (nodeset.Filepath is null || nodeset.Filepath.Length == 0)
+                    return OperationResult.Fail("ConstraintUnsavedNodeset", $"Network '{network.Name}' uses nodeset '{nodeset.Name}' which is not yet saved to filepath. Save that first!");
+
+                // Get fileformat of the network based on the filepath
+                FileFormat format = Misc.GetFileFormatFromFileEnding(filepath);
+
+                switch (format)
+                {
+                    case FileFormat.Tsv:
+                    case FileFormat.TsvGzip:
+                        // If the nodeset has been modified since last save, save this first
+                        if (nodeset.IsModified)
+                        {
+                            // Do a fileformat check on the nodeset as well and send that along to this. The Nodeset might be stored in different format
+                            //FileFormat formatNodeset = Misc.GetFileFormatFromFileEnding(nodeset.Filepath);
+                            SaveNodeset(nodeset, nodeset.Filepath);
+                            //FileSerializerTsv.SaveNodesetToFile(nodeset, nodeset.Filepath, formatNodeset);
+                            // Then save Network
+                            FileSerializerTsv.SaveNetworkToFile(network, filepath, format);
+                            // And return OpResult to inform that both were saved.
+                            return OperationResult.Ok($"Saved network '{network.Name}' to filepath: {filepath}, and saved nodeset '{nodeset.Name}' to filepath: {nodeset.Filepath}.");
+                        }
+                        // Nodeset has not been modified since last save, so just save network and inform about that
+                        FileSerializerTsv.SaveNetworkToFile(network, filepath, format);
+                        return OperationResult.Ok($"Saved network '{network.Name}' to filepath: {filepath}");
+                    case FileFormat.Bin:
+                    case FileFormat.BinGzip:
+                        if (nodeset.IsModified)
+                        {
+                            //FileFormat formatNodeset = Misc.GetFileFormatFromFileEnding(nodeset.Filepath);
+                            SaveNodeset(nodeset, nodeset.Filepath);
+                            //FileSerializerBin.SaveNodesetToFile(nodeset, nodeset.Filepath, formatNodeset);
+                            FileSerializerBin.SaveNetworkToFile(network, filepath, format);
+                            return OperationResult.Ok($"Saved network '{network.Name}' to filepath: {filepath}, and saved nodeset '{nodeset.Name}' to filepath: {nodeset.Filepath}.");
+
+                        }
+                        FileSerializerBin.SaveNetworkToFile(network, filepath, format);
+                        return OperationResult.Ok($"Saved network '{network.Name}' to filepath: {filepath}");
+                    default:
+                        return OperationResult.Fail("UnsupportedFileFormat", $"Save format '{format}' not supported.");
+                }
+            }
+            catch (Exception e)
+            {
+                return OperationResult.Fail("IOError", $"Unexpected error while saving network: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Internal method to load a Nodeset from filepath.
+        /// Throws exceptions if something happens, though these are always caught by caller.
+        /// Returns an OperationResult wrapping a StructureResult.
+        /// Note that the filepath format is derived from the filepath ending.
+        /// </summary>
+        /// <param name="filepath">The filepath to load from.</param>
+        /// <returns>An OperationResult, with a StructureResult containing a Nodeset if all went well.</returns>
+        private static OperationResult<StructureResult> LoadNodeset(string filepath)
+        {
+            filepath = Path.GetFullPath(filepath);
+            try
+            {
+                FileFormat format = Misc.GetFileFormatFromFileEnding(filepath);
+                if (format == FileFormat.None)
+                    return OperationResult<StructureResult>.Fail("UnsupportedFileFormat", $"File ending '{Path.GetFileName(filepath)}' not supported for loading Nodeset.");
+
+                Nodeset nodeset;
+                switch (format)
+                {
+                    case FileFormat.Tsv:
+                    case FileFormat.TsvGzip:
+                        nodeset = FileSerializerTsv.LoadNodesetFromFile(filepath, format);
+                        return OperationResult<StructureResult>.Ok(new StructureResult(nodeset));
+                    case FileFormat.Bin:
+                    case FileFormat.BinGzip:
+                        nodeset = FileSerializerBin.LoadNodesetFromFile(filepath, format);
+                        return OperationResult<StructureResult>.Ok(new StructureResult(nodeset));
+                }
+                return OperationResult<StructureResult>.Fail("UnsupportedFileFormat", $"File ending '{Path.GetFileName(filepath)}' not supported for loading Nodeset.");
+            }
+            catch (Exception e)
+            {
+                return OperationResult<StructureResult>.Fail("IOError", $"Unexpected error while loading nodeset: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Internal method to load a Network from filepath. Also loads the Nodeset that the Network refers to.
+        /// Throws exceptions if something happens, though these are always caught by caller.
+        /// Note that the filepath format is derived from the filepath ending.
+        /// </summary>
+        /// <param name="filepath">The filepath to load from.</param>
+        /// <returns>An OperationResult, with a StructureResult containing a Network and a Nodeset if all went well.</returns>
+        private static OperationResult<StructureResult> LoadNetwork(string filepath, bool packLayers = false)
+        {
+            filepath = Path.GetFullPath(filepath);
+            try
+            {
+                FileFormat format = Misc.GetFileFormatFromFileEnding(filepath);
+                if (format == FileFormat.None)
+                    return OperationResult<StructureResult>.Fail("UnsupportedFileFormat", $"File ending '{Path.GetFileName(filepath)}' not supported for loading Network.");
+
+                StructureResult structureResult;
+                switch (format)
+                {
+                    case FileFormat.Tsv:
+                    case FileFormat.TsvGzip:
+                        structureResult = FileSerializerTsv.LoadNetworkFromFile(filepath, format, packLayers);
+                        return OperationResult<StructureResult>.Ok(structureResult);
+                    case FileFormat.Bin:
+                    case FileFormat.BinGzip:
+                        structureResult = FileSerializerBin.LoadNetworkFromFile(filepath, format, packLayers);
+                        return OperationResult<StructureResult>.Ok(structureResult);
+                }
+                return OperationResult<StructureResult>.Fail("UnsupportedFileFormat", $"File ending '{Path.GetFileName(filepath)}' not supported for loading Network.");
+            }
+            catch (Exception e)
+            {
+                return OperationResult<StructureResult>.Fail("IOError", $"Unexpected error while loading network: {e.Message}");
+            }
+        }
+
+        private static OperationResult<List<(string Name, NodeAttributeType Type, Dictionary<uint, string> Values)>> ParseNodeAttributeLines(string[] lines, char separator)
+        {
+            if (lines.Length == 0)
+                return OperationResult<List<(string, NodeAttributeType, Dictionary<uint, string>)>>.Fail("EmptyFile", "The file is empty.");
+            string[] headerCells = lines[0].Split(separator);
+            if (headerCells.Length < 2)
+                return OperationResult<List<(string, NodeAttributeType, Dictionary<uint, string>)>>.Fail(
+            "InvalidHeader", "Header row must contain at least one attribute column after the nodeId column.");
+            int nbrAttributes = headerCells.Length - 1;
+            var attributes = new List<(string Name, NodeAttributeType Type, Dictionary<uint, string> Values)>(nbrAttributes);
+
+            for (int i = 0; i < nbrAttributes; i++)
+            {
+                string cell = headerCells[i + 1].Trim();
+                int colonIdx = cell.LastIndexOf(':');
+                string name;
+                NodeAttributeType type;
+                if (colonIdx > 0)
+                {
+                    name = cell[..colonIdx];
+                    string typeStr = cell[(colonIdx + 1)..];
+                    if (Misc.GetAttributeType(typeStr) is not NodeAttributeType parsedType)
+                        return OperationResult<List<(string, NodeAttributeType, Dictionary<uint, string>)>>.Fail(
+                            "InvalidAttributeType",
+                            $"Attribute type '{typeStr}' in header column {i + 2} is not recognized.");
+                    type = parsedType;
+                }
+                else
+                {
+                    name = cell;
+                    type = NodeAttributeType.String;
+                }
+                attributes.Add((name, type, []));
+            }
+
+            for (int lineIdx = 1; lineIdx < lines.Length; lineIdx++)
+            {
+                string line = lines[lineIdx];
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                string[] cells = line.Split(separator);
+                if (!uint.TryParse(cells[0].Trim(), out uint nodeId)) continue;
+                for (int i = 0; i < nbrAttributes; i++)
+                {
+                    string value = (i + 1 < cells.Length) ? cells[i + 1].Trim() : string.Empty;
+                    attributes[i].Values[nodeId] = value;
+                }
+            }
+            return OperationResult<List<(string, NodeAttributeType, Dictionary<uint, string>)>>.Ok(attributes);
+        }
+        #endregion
+    }
+}

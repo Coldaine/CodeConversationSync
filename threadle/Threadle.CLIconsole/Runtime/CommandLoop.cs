@@ -1,0 +1,121 @@
+﻿using System.Text;
+using Threadle.CLIconsole.Parsing;
+using Threadle.CLIconsole.Results;
+
+namespace Threadle.CLIconsole.Runtime
+{
+    /// <summary>
+    /// The static class representing the command loop, i.e. where the user types
+    /// in commands on the CLI console, commands are being parsed and executed, and
+    /// output is being shown.
+    /// </summary>
+    public static class CommandLoop
+    {
+        #region Properties
+        /// <summary>
+        /// Gets a Threadle welcome message for the console, with the current version numbers for
+        /// the CLI console and the Core assembly.
+        /// </summary>
+        public static List<string> WelcomeMessage
+        {
+            get
+            {
+                var cliAssembly = System.Reflection.Assembly.GetExecutingAssembly();
+                var cliVersion = cliAssembly.GetName().Version?.ToString(3) ?? "unknown";
+
+                var coreAssembly = typeof(Core.Model.Network).Assembly;
+                var coreVersion = coreAssembly.GetName().Version?.ToString(3) ?? "unknown";
+
+                return new()
+                {
+                    $"\u001b[36mThreadle CLI Console v{cliVersion}     |   Threadle Core v{coreVersion}\u001b[0m\r\n" +
+                    $"\u001b[90m--------------------------------------------------------------------------\u001b[0m\r\n" +
+                    $"\r\n" +
+                    $"  Developed by: \u001b[36mCarl Nordlund\u001b[0m\r\n" +
+                    $"  Institute for Analytical Sociology (IAS), Linköping University\r\n" +
+                    $"\r\n" +
+                    $"  R extension (threadleR) by: \u001b[36mYukun Jiao\u001b[0m\r\n" +
+                    $"\r\n" +
+                    $"  Project website: \u001b[36mhttps://threadle.dev\u001b[0m\r\n" +
+                    $"  Funding: Swedish Research Council (Vetenskapsrådet), Grant 2024-01861\r\n" +
+                    $"  License: MIT · © 2026 Carl Nordlund\r\n"+
+                    $"\r\n" +
+                    $"  Type '\u001b[36mhelp\u001b[0m' for commands, '\u001b[36mabout\u001b[0m' for Threadle details, '\u001b[36mexit\u001b[0m' to quit.\r\n"
+                };
+            }
+        }
+        #endregion
+
+
+        #region Methods (internal)
+        /// <summary>
+        /// Method that starts the command loop: reads input from console (STDIN), takes care of
+        /// the special 'exit' and 'help' commands, parses the input to a <see cref="CommandPackage"/> object
+        /// and sends this to the <see cref="CommandDispatcher"/> for execution. All output is passed on
+        /// to <see cref="ConsoleOutput"/>.
+        /// </summary>
+        internal static void Run(bool jsonMode)
+        {
+            // Create the CommandContext that will store variables
+            var context = new CommandContext();
+
+            /// Create the renderer that will output CommandResult data
+            /// Either as JSON or human-readable text
+            ICommandResultRenderer renderer = jsonMode
+                ? new JsonCommandResultRenderer()
+                : new TextCommandResultRenderer();
+
+            /// Create parser that will convert input from either human-readable
+            /// text or JSON to a CommandPackage
+            ICommandParser parser = jsonMode
+                ? new JsonCommandParser()
+                : new TextCommandParser();
+
+            /// Set Console output properties
+            Console.OutputEncoding = Encoding.UTF8;
+            Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+
+            /// Write welcome message if non-JSON
+            if (!jsonMode && CLISettings.Verbose)
+                ConsoleOutput.WriteLines(WelcomeMessage);
+
+            // Start infinite command loop
+            while (true)
+            {
+                if (!jsonMode)
+                    ConsoleOutput.Write("> ");
+
+                var line = Console.ReadLine();
+                if (line == null)
+                    break;
+                var input = line.Trim();
+
+                if (string.IsNullOrWhiteSpace(input) || input[0].Equals('#'))
+                    continue;
+                if (input.ToLower() == "exit")
+                    break;
+                var command = parser.Parse(input);
+
+                if (command == null)
+                {
+                    if (jsonMode)
+                        renderer.RenderException(new Exception("Invalid command syntax."));
+                    else
+                        ConsoleOutput.WriteLine("!Error: Invalid command syntax.");
+                    continue;
+                }
+
+                try
+                {
+                    var result = CommandDispatcher.Dispatch(command, context);
+                    renderer.Render(result);
+                }
+                catch (Exception ex)
+                {
+                    renderer.RenderException(ex);
+                }
+            }
+        }
+        #endregion
+    }
+}
